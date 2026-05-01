@@ -1,0 +1,9 @@
+node_modules/
+.npm/
+.env
+.env.*
+.DS_Store
+*.log
+*.tgz
+*.zip
+.cache/

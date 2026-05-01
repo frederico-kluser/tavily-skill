@@ -1,0 +1,20 @@
+{
+  "name": "pi-tavily-skill",
+  "version": "1.1.0",
+  "description": "Tavily Agent Skill for Pi Coding Agent, OpenCode, and GitHub Copilot CLI.",
+  "license": "MIT",
+  "keywords": [
+    "pi-package",
+    "agent-skill",
+    "tavily",
+    "pi-coding-agent"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "pi": {
+    "skills": [
+      "./skills"
+    ]
+  }
+}
