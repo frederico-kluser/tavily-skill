@@ -1,64 +1,51 @@
 # Tavily Skill for Pi, OpenCode, and GitHub Copilot CLI
 
-A cross-agent Tavily skill packaged for **Pi Coding Agent** and still easy to use with **OpenCode** and **GitHub Copilot CLI**.
+Portable Tavily-powered web search, content extraction, site crawling, URL mapping, and deep research for AI coding agents — **without MCP**.
 
-This repository is structured the **Pi package way** so you can publish it to GitHub and install it with:
-
-```bash
-pi install https://github.com/YOUR_USERNAME/tavily-skill
-```
-
-It also contains a standard Agent Skill at `skills/tavily/`, so users of other harnesses can copy or symlink that folder into `~/.agents/skills/tavily`.
+This repository ships a production-ready Agent Skill at `skills/tavily/` and is also structured as a **Pi package**, so Pi users can install it directly from a git repository while other Agent Skills-compatible tools can use the same skill directory.
 
 ---
 
-## Why this layout
+## Highlights
 
-Pi officially supports sharing skills through **Pi packages** published via **git** or **npm**. A package can expose resources through a `pi` manifest in `package.json` or through conventional directories such as `skills/`.
-
-This repository uses:
-- a root `package.json` with the `pi-package` keyword
-- a `pi.skills` manifest pointing at `./skills`
-- one skill under `skills/tavily/`
-
-That makes it:
-- installable via `pi install https://github.com/...`
-- compatible with the Agent Skills format
-- easy to reuse manually in OpenCode, Copilot CLI, Claude Code, and similar tools
+- **One skill, multiple harnesses**: Pi, OpenCode, and GitHub Copilot CLI
+- **No MCP required**: uses a normal CLI (`tvly`) through `bash`
+- **Clean default output**: Markdown-first, JSON optional
+- **Built-in cost guardrails**: commands estimated above 10 credits are blocked unless explicitly confirmed
+- **Async deep research workflow**: `research-start` + `research-poll`
+- **Local cache and usage ledger**: repeated identical calls can be free within TTL
+- **Useful offline behavior**: `tvly --help`, `tvly --version`, `tvly cost`, and `tvly cache-clear` work without an API key
 
 ---
 
-## Requirements
+## Supported environments
 
-- **Node.js 18+**
-- **bash**
-- **TAVILY_API_KEY** environment variable
-- **Optional:** `jq` for examples that extract `request_id` from JSON
+| Environment | How to use it |
+|---|---|
+| **Pi Coding Agent** | Install as a Pi package from git, or use `skills/tavily/` directly |
+| **OpenCode** | Copy or symlink `skills/tavily/` into `.agents/skills/` or `~/.agents/skills/` |
+| **GitHub Copilot CLI** | Copy or symlink `skills/tavily/` into `.agents/skills/` or `~/.agents/skills/` |
 
 ---
 
-## Installation
+## Install
 
-### Option 1 — Install as a Pi package from GitHub
-After you publish this repository:
+### Pi Coding Agent
+
+Once this repository is published, install it from git:
 
 ```bash
-pi install https://github.com/YOUR_USERNAME/tavily-skill
+pi install https://github.com/<owner>/tavily-skill
 ```
 
-Or:
+Pi packages can expose skills through the `pi.skills` manifest. This repository is already set up for that.
+
+### Manual install for any Agent Skills-compatible harness
+
+Clone the repository and link the skill directory:
 
 ```bash
-pi install git:github.com/YOUR_USERNAME/tavily-skill
-```
-
-Pi supports installing packages directly from git repositories. This repository is already structured for that.
-
-### Option 2 — Manual cross-agent install
-Clone the repository anywhere, then copy or symlink the skill folder:
-
-```bash
-git clone https://github.com/YOUR_USERNAME/tavily-skill.git
+git clone https://github.com/<owner>/tavily-skill.git
 mkdir -p ~/.agents/skills
 ln -snf "$PWD/tavily-skill/skills/tavily" ~/.agents/skills/tavily
 bash ~/.agents/skills/tavily/install.sh
@@ -72,29 +59,27 @@ cp -R tavily-skill/skills/tavily ~/.agents/skills/tavily
 bash ~/.agents/skills/tavily/install.sh
 ```
 
-### Option 3 — Project-local install
-Put the skill directory inside a repository at:
+### Project-local install
+
+Put the skill directory in a repository at:
 
 ```bash
 .agents/skills/tavily/
 ```
 
-For Pi specifically, project-local `.agents/skills/` is a native discovery location.
-
 ---
 
-## Configure Tavily
+## Requirements
 
-Set your API key without exposing the real value:
+- **Node.js 18+**
+- **bash**
+- **`TAVILY_API_KEY`** environment variable
+- **Optional:** `jq` for research examples that extract `request_id` from JSON
+
+Configure Tavily:
 
 ```bash
 export TAVILY_API_KEY=tvly-...
-```
-
-Then reload your shell if needed:
-
-```bash
-source ~/.bashrc   # or ~/.zshrc
 ```
 
 Smoke test:
@@ -106,31 +91,9 @@ tvly search "tavily api hello world" --max 1
 
 ---
 
-## Repository structure
+## What the skill provides
 
-```text
-.
-├── docs/
-│   └── PUBLISHING.md
-├── skills/
-│   └── tavily/
-│       ├── SKILL.md
-│       ├── install.sh
-│       ├── bin/
-│       │   └── tvly.mjs
-│       └── references/
-│           ├── COSTS.md
-│           └── ENDPOINTS.md
-├── .gitignore
-├── LICENSE
-└── package.json
-```
-
----
-
-## Skill capabilities
-
-The `tavily` skill exposes the main Tavily API workflows through a single `tvly` CLI:
+The `tavily` skill exposes the main Tavily workflows through a single `tvly` CLI:
 
 - `search`
 - `extract`
@@ -142,32 +105,91 @@ The `tavily` skill exposes the main Tavily API workflows through a single `tvly`
 - `usage`
 - local `cost` tracking
 
-### Notable implementation details
+---
 
-- no MCP required
-- `tvly --help` and `tvly --version` work without an API key
-- `tvly cost` persists local usage in `~/.cache/tavily-skill/usage.jsonl`
-- expensive commands are blocked by default unless confirmed
-- `research --model pro` is intentionally blocked in sync mode
+## Usage examples
+
+### Search
+
+```bash
+tvly search "latest JavaScript framework trends" --depth basic --max 5
+```
+
+### Extract known URLs
+
+```bash
+tvly extract https://docs.tavily.com/documentation/api-reference/introduction
+```
+
+### Map a documentation site
+
+```bash
+tvly map https://docs.tavily.com --limit 50
+```
+
+### Crawl a focused subset of a site
+
+```bash
+tvly crawl https://docs.tavily.com \
+  --select-paths "/documentation/.*" \
+  --exclude-paths "/blog/.*" \
+  --chunks 3
+```
+
+### Start deep research
+
+```bash
+JOB=$(tvly research-start "compare search APIs for coding agents" --model pro --confirm-expensive --json | jq -r .request_id)
+tvly research-poll "$JOB"
+```
+
+### Inspect local usage
+
+```bash
+tvly cost
+tvly cost --json
+tvly cost --reset
+```
+
+---
+
+## Cost and safety behavior
+
+- **Start cheap by default**: the skill is designed around `basic` search depth and small result sets first
+- **Guardrails for expensive calls**: commands estimated above 10 credits require `--confirm-expensive` or `TAVILY_ALLOW_EXPENSIVE=1`
+- **Synchronous `pro` research is blocked**: use `research-start` + `research-poll`
+- **Cache enabled by default**: local response cache lives in `~/.cache/tavily-skill/`
+- **Usage ledger enabled**: local usage history is stored in `~/.cache/tavily-skill/usage.jsonl`
+- **Web content is treated as untrusted input**: the skill prints results, it does not execute page content
+
+---
+
+## Repository layout
+
+```text
+.
+├── package.json
+├── README.md
+├── LICENSE
+└── skills/
+    └── tavily/
+        ├── SKILL.md
+        ├── install.sh
+        ├── bin/
+        │   └── tvly.mjs
+        └── references/
+            ├── COSTS.md
+            └── ENDPOINTS.md
+```
 
 ---
 
 ## Security
 
-- This repository contains **no real API keys**.
-- Never commit `TAVILY_API_KEY` values.
-- The included installer only prints placeholders such as `tvly-...`.
-- Review skills before installing, because skills can instruct an agent to run commands.
-
----
-
-## Publishing notes
-
-If you publish this repository to GitHub, users can install it with Pi directly from git.
-
-If you later also publish it to npm with the `pi-package` keyword, it can appear in the Pi package ecosystem and be installable with `pi install npm:...` as well.
-
-Detailed publish steps are in [docs/PUBLISHING.md](docs/PUBLISHING.md).
+- This repository contains **no real API keys**
+- Never commit `TAVILY_API_KEY` values
+- The installer only uses placeholders such as `tvly-...`
+- Review any skill before installing, since skills can instruct agents to run commands
 
 ---
 
