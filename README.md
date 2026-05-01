@@ -35,7 +35,7 @@ This repository ships a production-ready Agent Skill at `skills/tavily/` and is 
 Once this repository is published, install it from git:
 
 ```bash
-pi install https://github.com/<owner>/tavily-skill
+pi install https://github.com/frederico-kluser/tavily-skill
 ```
 
 Pi packages can expose skills through the `pi.skills` manifest. This repository is already set up for that.
@@ -45,7 +45,7 @@ Pi packages can expose skills through the `pi.skills` manifest. This repository 
 Clone the repository and link the skill directory:
 
 ```bash
-git clone https://github.com/<owner>/tavily-skill.git
+git clone https://github.com/frederico-kluser/tavily-skill.git
 mkdir -p ~/.agents/skills
 ln -snf "$PWD/tavily-skill/skills/tavily" ~/.agents/skills/tavily
 bash ~/.agents/skills/tavily/install.sh

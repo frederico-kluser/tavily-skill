@@ -3,6 +3,15 @@
   "version": "1.1.0",
   "description": "Tavily Agent Skill for Pi Coding Agent, OpenCode, and GitHub Copilot CLI.",
   "license": "MIT",
+  "author": "frederico-kluser",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/frederico-kluser/tavily-skill.git"
+  },
+  "homepage": "https://github.com/frederico-kluser/tavily-skill#readme",
+  "bugs": {
+    "url": "https://github.com/frederico-kluser/tavily-skill/issues"
+  },
   "keywords": [
     "pi-package",
     "agent-skill",
