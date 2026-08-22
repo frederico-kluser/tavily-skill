@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="en" data-bs-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>EXPLAINER — surf-agent-skill v7.0.0 documentation update</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.8/dist/css/bootstrap.min.css" crossorigin="anonymous">
+<style>
+  body { background: #1a1a2e; color: #e0e0e0; font-family: system-ui, sans-serif; }
+  h1, h2, h3 { color: #00d4ff; }
+  .card { background: #16213e; border: 1px solid #0f3460; }
+  table { color: #e0e0e0; }
+  code { color: #00ff88; }
+  .badge-ok { background: #00ff88; color: #000; }
+  .badge-fix { background: #ffaa00; color: #000; }
+  .badge-new { background: #00d4ff; color: #000; }
+</style>
+</head>
+<body class="container py-5">
+<h1>🧠 EXPLAINER — surf-agent-skill v7.0.0</h1>
+<p class="lead">Documentation update — analysis of project debts and full documentation alignment</p>
+<p><strong>Date:</strong> 2026-08-06 · <strong>Branch:</strong> main · <strong>Mode:</strong> normal</p>
+
+<div class="card my-4"><div class="card-body">
+<h2>📊 Summary</h2>
+<table class="table table-dark">
+<tr><td>Waves executed</td><td>4 (Foundation, Fix, References, Onboarding)</td></tr>
+<tr><td>Sub-agents dispatched</td><td>12 (3 audit + 4 fix + 4 reference + 1 onboarding)</td></tr>
+<tr><td>Squash commits</td><td>9</td></tr>
+<tr><td>Files modified</td><td>27</td></tr>
+<tr><td>Gates</td><td>All green (103 tests, 0 failures)</td></tr>
+</table>
+</div></div>
+
+<div class="card my-4"><div class="card-body">
+<h2>🌊 Waves & Commits</h2>
+<table class="table table-dark table-striped">
+<thead><tr><th>Wave</th><th>Squash Commit</th><th>Files</th><th>Status</th></tr></thead>
+<tbody>
+<tr><td>1 — Foundation</td><td><em>read-only audit — no commits</em></td><td>0</td><td><span class="badge badge-ok">✓</span></td></tr>
+<tr><td>2 — Fix</td><td><code>fix: add missing tier credits for core2x, ultra2x, ultra4x</code></td><td>1</td><td><span class="badge badge-fix">fix</span></td></tr>
+<tr><td>2 — Fix</td><td><code>chore: align all version strings to 7.0.0</code></td><td>17</td><td><span class="badge badge-fix">chore</span></td></tr>
+<tr><td>2 — Fix</td><td><code>docs: translate SKILL.md frontmatter to English</code></td><td>1</td><td><span class="badge badge-fix">docs</span></td></tr>
+<tr><td>2 — Fix</td><td><code>docs: fix 5 inaccurate claims in README.md</code></td><td>1</td><td><span class="badge badge-fix">docs</span></td></tr>
+<tr><td>3 — References</td><td><code>docs: translate burst-templates.md to English</code></td><td>1</td><td><span class="badge badge-fix">docs</span></td></tr>
+<tr><td>3 — References</td><td><code>docs: update outdated reference docs</code></td><td>3</td><td><span class="badge badge-fix">docs</span></td></tr>
+<tr><td>3 — References</td><td><code>docs: archive historical CHANGELOG entries</code></td><td>2</td><td><span class="badge badge-fix">docs</span></td></tr>
+<tr><td>3 — References</td><td><code>docs: add missing flags to bin help texts</code></td><td>2</td><td><span class="badge badge-fix">docs</span></td></tr>
+<tr><td>4 — Onboarding</td><td><code>docs: create project-router skill</code></td><td>1</td><td><span class="badge badge-new">new</span></td></tr>
+</tbody></table>
+</div></div>
+
+<div class="card my-4"><div class="card-body">
+<h2>🔍 Debts Found & Fixed</h2>
+<table class="table table-dark table-striped">
+<thead><tr><th>#</th><th>Debt</th><th>Severity</th><th>Resolution</th></tr></thead>
+<tbody>
+<tr><td>D1</td><td>Version drift: SKILL.md (v7.0.0) vs everything else (v5.4.0)</td><td>CRITICAL</td><td>Aligned 17 files to 7.0.0 + added CHANGELOG entries for v6.0.0/v7.0.0</td></tr>
+<tr><td>D2</td><td>SKILL.md frontmatter in Portuguese (rest of project in English)</td><td>HIGH</td><td>Translated description, argument-hint, metadata.requires to English</td></tr>
+<tr><td>D3</td><td>burst-templates.md entirely in Portuguese</td><td>HIGH</td><td>Translated all 8 templates (T1-T8) to English</td></tr>
+<tr><td>D4</td><td>Missing project-router / CLAUDE.md</td><td>MEDIUM</td><td>Created .claude/skills/project-router/SKILL.md</td></tr>
+<tr><td>D5</td><td>CHANGELOG.md over 53KB</td><td>MEDIUM</td><td>Archived v1.0.0-v4.1.0 to CHANGELOG-archive.md (~22KB remaining)</td></tr>
+<tr><td>D6</td><td>5 inaccurate claims in README.md</td><td>MEDIUM</td><td>Fixed rule reference, search mode default, duplicate directory, UTC docs, SKILL.md description</td></tr>
+<tr><td>D7</td><td>cost.mjs missing tier credits (core2x, ultra2x, ultra4x)</td><td>HIGH</td><td>Added 3 entries to tierCredits map — was causing 50x cost underestimation</td></tr>
+<tr><td>D8</td><td>plan-workflow.md outdated (v5.0.0, missing sections)</td><td>MEDIUM</td><td>Updated to v7.0.0, added Layer A-manual + Delegated Research sections</td></tr>
+<tr><td>D9</td><td>surf-ai-cli.md: incomplete exit codes, missing --no-budget flag</td><td>LOW</td><td>Expanded exit code 1 docs, added --no-budget to flags table</td></tr>
+<tr><td>D10</td><td>Bin help texts missing --budget-ms and --no-cache</td><td>LOW</td><td>Added flags to surf-search-normal and surf-search-unlimit help</td></tr>
+</tbody></table>
+</div></div>
+
+<div class="card my-4"><div class="card-body">
+<h2>📋 Before → After (Key Files)</h2>
+<table class="table table-dark table-striped">
+<thead><tr><th>File</th><th>Before</th><th>After</th></tr></thead>
+<tbody>
+<tr><td>package.json</td><td>version: "5.4.0"</td><td>version: "7.0.0"</td></tr>
+<tr><td>bin/*.mjs (6 files)</td><td>VERSION = '5.4.0'</td><td>VERSION = '7.0.0'</td></tr>
+<tr><td>src/lib/dispatch.mjs</td><td>VERSION = '5.4.0'</td><td>VERSION = '7.0.0'</td></tr>
+<tr><td>src/validators/index.mjs</td><td>VERSION = '5.4.0'</td><td>VERSION = '7.0.0'</td></tr>
+<tr><td>src/lib/ai/orchestrator.mjs</td><td>(no VERSION const)</td><td>const VERSION = '7.0.0'</td></tr>
+<tr><td>src/lib/cost.mjs</td><td>map missing core2x, ultra2x, ultra4x</td><td>map complete (9 entries)</td></tr>
+<tr><td>SKILL.md</td><td>Frontmatter in Portuguese</td><td>Frontmatter in English, body preserved</td></tr>
+<tr><td>skills/surf-plan-agent-skill/SKILL.md</td><td>version: "5.4.0"</td><td>version: "7.0.0"</td></tr>
+<tr><td>skills/surf-free-agent-skill/SKILL.md</td><td>version: "5.4.0"</td><td>version: "7.0.0"</td></tr>
+<tr><td>README.md</td><td>5 inaccurate claims, version v5.4.0</td><td>Claims fixed, version v7.0.0</td></tr>
+<tr><td>CHANGELOG.md</td><td>53KB, no v6/v7 entries</td><td>22KB, v6+v7 entries + archive</td></tr>
+<tr><td>CHANGELOG-archive.md</td><td>(did not exist)</td><td>Created — v1.0.0-v4.1.0 history</td></tr>
+<tr><td>references/burst-templates.md</td><td>Entirely in Portuguese</td><td>English translation</td></tr>
+<tr><td>references/plan-workflow.md</td><td>v5.0.0, 3 layers</td><td>v7.0.0, 4 layers + Delegated Research</td></tr>
+<tr><td>references/surf-ai-cli.md</td><td>Exit code 1 incomplete</td><td>Expanded + --no-budget flag</td></tr>
+<tr><td>references/COSTS.md</td><td>Imprecise crawl cost</td><td>Precise formula from cost.mjs</td></tr>
+<tr><td>bin/surf-search-normal.mjs</td><td>Help missing --budget-ms, --no-cache</td><td>Flags added</td></tr>
+<tr><td>bin/surf-search-unlimit.mjs</td><td>Help missing --budget-ms, --no-cache</td><td>Flags added</td></tr>
+<tr><td>.claude/skills/project-router/SKILL.md</td><td>(did not exist)</td><td>Created — knowledge map</td></tr>
+</tbody></table>
+</div></div>
+
+<div class="card my-4"><div class="card-body">
+<h2>🤖 Autonomous Decisions</h2>
+<ul>
+<li><strong>Version alignment to 7.0.0</strong> — the SKILL.md frontmatter (author's latest intent) was treated as canonical; everything else was bumped to match. The intermediate v6.0.0 (mentioned in commit message but never applied to any artifact) was documented as a CHANGELOG entry.</li>
+<li><strong>Bilingual triggers preserved</strong> — Portuguese triggers in SKILL.md description were kept alongside English to avoid breaking the skill for Portuguese-speaking users.</li>
+<li><strong>cost.mjs tier values</strong> — core2x=8, ultra2x=50, ultra4x=100 were chosen following the same proportional logic as existing tiers in the map.</li>
+<li><strong>Orchestrator body preserved in Portuguese</strong> — only the YAML frontmatter was translated; the workflow body remains in the native language of the v7 template.</li>
+</ul>
+</div></div>
+
+<div class="card my-4"><div class="card-body">
+<h2>✅ Containment Verification</h2>
+<table class="table table-dark">
+<tr><td>Mode</td><td>normal</td></tr>
+<tr><td>Integration branch</td><td>main</td></tr>
+<tr><td>Worktrees created</td><td>12 (all removed)</td></tr>
+<tr><td>Third-party worktrees</td><td>0 (none touched)</td></tr>
+<tr><td>Branches archived</td><td>refs/do-archive/20260806-110459-90204/*</td></tr>
+<tr><td>Final state</td><td>Clean working tree, all gates green</td></tr>
+</table>
+</div></div>
+
+<footer class="text-muted mt-5">
+<p>Generated by deep-orchestrator · Run ID: 20260806-110459-90204 · surf-agent-skill v7.0.0</p>
+</footer>
+</body></html>

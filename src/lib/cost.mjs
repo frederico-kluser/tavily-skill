@@ -42,7 +42,7 @@ function estimateTavily(op, args) {
 // Parallel — approximate, since public per-request pricing is opaque.
 // Tier mapping: lite ≈ 1, base ≈ 2, core/pro ≈ 5, ultra ≈ 25, ultra8x ≈ 200.
 function tierCredits(p) {
-  return { lite: 1, base: 2, core: 5, pro: 8, ultra: 25, ultra8x: 200 }[p] || 2;
+  return { lite: 1, base: 2, core: 5, core2x: 8, pro: 8, ultra: 25, ultra2x: 50, ultra4x: 100, ultra8x: 200 }[p] || 2;
 }
 
 function estimateParallel(op, args) {

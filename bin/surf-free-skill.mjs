@@ -12,7 +12,7 @@ import { dispatch, DispatchError } from '../src/lib/dispatch.mjs';
 import { formatFor } from '../src/lib/format.mjs';
 import { setSilent } from '../src/lib/progress.mjs';
 
-const VERSION = '5.4.0';
+const VERSION = '7.0.0';
 
 const HELP = `surf-free-skill — free, keyless web search (Wikipedia + DuckDuckGo)
 

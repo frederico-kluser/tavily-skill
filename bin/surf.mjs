@@ -24,7 +24,7 @@ import { KEYLESS_PROVIDERS } from '../src/lib/providers/index.mjs';
 import { runAiSetup } from '../src/lib/ai/setup.mjs';
 import { keysFromEnv, PRIMARY_MODEL } from '../src/lib/ai/openrouter.mjs';
 
-const VERSION = '5.4.0';
+const VERSION = '7.0.0';
 
 const HELP = `surf — multi-skill setup & validation
 

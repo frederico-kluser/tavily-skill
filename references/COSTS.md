@@ -27,8 +27,8 @@ Per-call costs:
 | `/extract` advanced | 2 per 5 URLs |
 | `/map` no instructions | 1 per 10 pages |
 | `/map` with instructions | 2 per 10 pages |
-| `/crawl` basic | mapping + 1/5 pages |
-| `/crawl` advanced | mapping + 2/5 pages |
+| `/crawl` basic | `ceilDiv(limit, 10) * mapRate + ceilDiv(limit, 5) * extractRate` (mapRate=1, extractRate=1) |
+| `/crawl` advanced | `ceilDiv(limit, 10) * mapRate + ceilDiv(limit, 5) * extractRate` (mapRate=2, extractRate=2) |
 | `/research` mini | dynamic, ~5–15 |
 | `/research` pro | dynamic, ~15–50 |
 | `/research/{id}` (poll) | 0 |

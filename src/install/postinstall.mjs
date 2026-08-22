@@ -68,7 +68,7 @@ async function main() {
   if (skel.created) process.stdout.write(`✓ created ${skel.created} (chmod 600)\n`);
 
   process.stdout.write('\n');
-  process.stdout.write('✓ surf-agent-skill 5.4.0 installed globally — 3 skills + 6 bins:\n');
+process.stdout.write('✓ surf-agent-skill 7.0.0 installed globally — 3 skills + 6 bins:\n');
   process.stdout.write('    surf                  interactive setup with live key validation\n');
   process.stdout.write('    surf-research-skill   web research: search, parallel fan-out, or async\n');
   process.stdout.write('                          deep research — auto-routed by the skill itself\n');

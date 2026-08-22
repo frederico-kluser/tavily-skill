@@ -4,7 +4,7 @@ This file expands on the workflow defined in `skills/surf-plan-agent-skill/SKILL
 It's for humans reviewing the methodology, not for the agent (which only
 reads SKILL.md).
 
-## v5.0.0 — one skill, two depths
+## v7.0.0 — one skill, two depths
 
 Through v4.2.0 this project shipped two separate planning skills:
 `surf-plan-agent-skill` (research-grounded, 6 phases) and `surf-deep-plan-skill`
@@ -48,12 +48,47 @@ proposed. See "Deep mode" below.
 | Layer | Mechanism | When |
 |---|---|---|
 | A | `surf-research-skill` CLI via Bash | Default. Multi-provider, key rotation, batching, parallel fan-out. |
+| A-manual | raw `surf-research-skill search/extract/crawl/map` via Bash | When `surf-ai` is unavailable or you need raw results without synthesis. |
 | B | Harness-native `WebSearch` / `WebFetch` | Bash unavailable, denied, or blocked by mode (plan mode); CLI missing or all keys burned. |
 | C | None | Halt: user explicitly chooses between aborting and an "NOT WEB-RESEARCHED"-labeled plan. |
 
 The layer is resolved in Phase 0 and recorded in the ledger. Mid-flow Layer A
 failures (burned key, timeout, denied call) downgrade to B for the remaining
 calls — research never silently stops.
+
+## Delegated research (subagent/swarm)
+
+When the harness exposes a **subagent tool** (`Agent`, `Task`, `AgentSwarm`,
+or equivalent), the research in **Phases 3/4D/6** (and the per-question
+searches in **Phases 5/5D**) MAY be delegated to a research subagent or a
+1-per-angle swarm instead of running inline. Without a subagent tool, all
+research runs inline via **Layer A/B** as described above — delegated mode is
+an option, never a requirement.
+
+### How it works
+
+1. **Dispatch:** for each research batch, hand off to a subagent (one per
+   Register category in Deep mode's Phase 4D; one per question in Phases
+   5/5D) with the brief contract from `surf-research-agent-skill`'s delegated
+   research section (objective, source categories, scope boundary, validated
+   return format with ledger rows + confirmed claims + detected doubts).
+2. **Receive:** the subagent returns validated findings (2+ sources per key
+   claim, dates checked, contradictions flagged) plus ledger rows and any new
+   doubts it surfaced.
+3. **Review:** the main agent — still the interviewer — reviews the returns.
+   New doubts enter the **Ambiguity Register** (Deep mode) or become the next
+   wave's targets.
+4. **Iterate:** if new doubts survive review and you are under the **3-wave
+   cap** (inherited from `surf-research-agent-skill` rule 7 — delegated mode does
+   NOT raise it), re-brief and dispatch again. Stop when saturated or the cap
+   is hit; record remaining gaps.
+
+### Fallback
+
+No subagent tool available? Run the research inline via Layer A or B as the
+current Phases 3/4D/5/5D/6 already prescribe — the gate, ledger, Register,
+and lock rules apply exactly as they do today. Delegated mode adds throughput
+without removing the existing path.
 
 ## Plan-approval modes (Claude Code plan mode)
 
@@ -95,7 +130,7 @@ How:
 Output: agent's mental model of "what already exists" + file paths, plus a
 1-line restatement of the goal that feeds Phase 2's decision.
 
-## Phase 2 — Mode Decision (new in v5.0.0)
+## Phase 2 — Mode Decision (new in v7.0.0)
 
 Why: the old world made the user (or the calling agent) pick between
 `surf-plan-agent-skill` and `surf-deep-plan-skill` up front, based on trigger

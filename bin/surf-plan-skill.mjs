@@ -9,7 +9,7 @@ import { listPlans, readPlan, newPlanStub } from '../src/plan/plan-file.mjs';
 import { slugify } from '../src/plan/slug.mjs';
 import { checkSurfSkill } from '../src/lib/check-surf-skill.mjs';
 
-const VERSION = '5.4.0';
+const VERSION = '7.0.0';
 
 const HELP = `surf-plan-skill — research-grounded execution planning skill
 

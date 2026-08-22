@@ -21,7 +21,7 @@ license: MIT
 argument-hint: "[task to plan, e.g. 'add rate limiting to the Express API']"
 allowed-tools: Bash(surf-search-normal:*), Bash(surf-search-unlimit:*), Bash(surf-research-skill:*), Bash(surf-plan-skill:*), Read, Glob, Grep, Write, Edit, WebSearch, WebFetch, AskUserQuestion
 metadata:
-  version: "5.4.0"
+  version: "7.0.0"
   requires: "node>=18; surf-search-normal + surf-research-skill in PATH (npm i -g surf-agent-skill) for Layer A research; an OpenRouter key (surf-research-skill ai-setup) for surf-ai synthesis — without it Layer A degrades to raw hits; harness WebSearch/WebFetch as Layer B fallback; plan dir at ~/.claude/plans/ (or ./plans/ if it exists in the project)"
 ---
 

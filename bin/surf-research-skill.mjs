@@ -18,7 +18,7 @@ import { progress, setSilent } from '../src/lib/progress.mjs';
 import { runAiCommand } from '../src/lib/ai/cli.mjs';
 import { runAiSetup } from '../src/lib/ai/setup.mjs';
 
-const VERSION = '5.4.0';
+const VERSION = '7.0.0';
 
 // Catch SIGTERM/SIGINT so a harness-driven kill surfaces a useful message
 // instead of dying silently. This is defense-in-depth: dispatch already

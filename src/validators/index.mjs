@@ -24,7 +24,7 @@ const ADAPTERS = {
   brave: braveProvider,
 };
 
-const VERSION = '5.4.0';
+const VERSION = '7.0.0';
 const VALIDATION_QUERY = 'surf-agent-skill key validation ping';
 const TIMEOUT_MS = 20_000;
 

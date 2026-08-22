@@ -13,7 +13,7 @@ import { sleep } from './flags.mjs';
 import { progress } from './progress.mjs';
 
 const CACHEABLE = new Set(['search', 'extract', 'map']);
-const VERSION = '5.4.0';
+const VERSION = '7.0.0';
 // After a key exhausts its 429 retries, sideline it for this long (persisted)
 // so we stop hammering a rate-limited key now and on the next process run.
 const RATE_LIMIT_COOLDOWN_MS = Number(process.env.SURF_RATE_LIMIT_COOLDOWN_MS) || 60_000;

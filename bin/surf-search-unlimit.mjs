@@ -15,7 +15,7 @@ import { setSilent } from '../src/lib/progress.mjs';
 import { runAiCommand, reportAiError } from '../src/lib/ai/cli.mjs';
 import { migrateLegacy } from '../src/lib/state.mjs';
 
-const VERSION = '5.4.0';
+const VERSION = '7.0.0';
 
 const HELP = `surf-search-unlimit — autonomous web research, AS MANY ROUNDS AS NEEDED
 
@@ -40,6 +40,8 @@ Tuning:
   --max N             results per search (default 8)
   --search-mode <fast|normal|slow>
   --ai-model <slug>   override the LLM (default deepseek/deepseek-v4-pro)
+  --budget-ms N         Override the self-budget (0 = unlimited). Also SURF_AI_BUDGET_MS.
+  --no-cache            Skip the response cache for this run.
 
 Output:
   --json              structured envelope (plan, ledger, sources, diagnostics)

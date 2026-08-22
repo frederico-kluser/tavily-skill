@@ -61,7 +61,7 @@ async function doFetch(query, ctx) {
   try {
     const res = await fetch(url, {
       method: 'GET',
-      headers: { 'Accept': 'application/json', 'X-Client-Name': `surf-agent-skill/${ctx.version || '5.4.0'}` },
+headers: { 'Accept': 'application/json', 'X-Client-Name': `surf-agent-skill/${ctx.version || '7.0.0'}` },
       signal: ctl.signal,
     });
     clearTimeout(t);

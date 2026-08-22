@@ -20,11 +20,11 @@
 
 ## surf-ai — the agent stops orchestrating research
 
-Before v5.4, this package handed the agent a toolbox and a 600-line SKILL.md
-explaining how to decompose a question, write a query array, fan it out, read
-the harvest, and decide what was missing. **That loop now runs inside the
-CLI.** The agent's job is down to two things: describe its situation, and pick
-one of two modes.
+Before surf-ai, the agent had to orchestrate research itself using a toolbox
+of CLI commands and a detailed instruction file. **That loop now runs inside
+the CLI.** The SKILL.md remains as the orchestrator's rulebook — what changed
+is the agent's role, from researcher to briefer: describe its situation, and
+pick one of two modes.
 
 ```
   agent: brief + mode
@@ -81,7 +81,7 @@ plan / design ──▶ surf-plan-agent-skill ──▶ Normal (research-grounde
 
 | | |
 |---|---|
-| **Status** | v5.4.0 (npm) |
+| **Status** | v7.0.0 (npm) |
 | **Install** | `npm i -g surf-agent-skill` (Linux · macOS · Windows) |
 | **Skills shipped** | `surf-research-agent-skill` (surf-ai) · `surf-plan-agent-skill` · `surf-free-agent-skill` |
 | **Bins shipped** | `surf`, `surf-search-normal`, `surf-search-unlimit`, `surf-research-skill`, `surf-plan-skill`, `surf-free-skill` |
@@ -523,9 +523,11 @@ Global flags every command accepts:
 
 ```bash
 surf-research-skill search "X" --mode fast    # 5 results / 1 credit Tavily / minimal latency
-surf-research-skill search "X" --mode normal  # 10 results / default everywhere
+surf-research-skill search "X" --mode normal  # Tavily basic depth, 10 results
 surf-research-skill search "X" --mode slow    # 20 results / Tavily advanced / deeper signal
 ```
+
+When no `--mode` flag is given, the CLI defaults to advanced depth (= slow mode, 20 results).
 
 Want to force a specific provider for a given mode?
 
@@ -559,8 +561,8 @@ surf-research-skill search "compare X vs Y" "alternatives to X" "X security issu
 Among the *manual* commands, batching beats looping with N separate bash calls
 — one process, one credit tally, one set of `[i/N]` progress logs. It is not a
 substitute for `surf-search-normal`: if you are still deciding what the queries
-should be, that decision belongs to surf-ai (`SKILL.md` rule 2 tells agents
-never to hand-roll the loop).
+should be, that decision belongs to surf-ai (the orchestrator's R1 rule forbids
+agents from running their own search loop — "Você nunca pesquisa").
 
 **Need true parallelism?** `surf-research-skill search-parallel` runs the queries
 **concurrently** through a bounded worker pool (default 6, cap 16), tolerant of
@@ -617,6 +619,8 @@ surf-ai (a real `surf-search-unlimit` run):
 
 The format is stable for grep/parse. Use `--quiet` or `SURF_QUIET=1` to
 silence (CI, piping, tests). Stdout stays clean either way.
+
+Timestamps are in **UTC**.
 
 ---
 
@@ -808,11 +812,11 @@ research-poll <id>`. Sync research is capped at 50 s on purpose.
 
 ---
 
-## Repository layout (v5.4.0)
+## Repository layout (v7.0.0)
 
 ```text
 .
-├── package.json                       ← name: surf-agent-skill (npm), version 5.4.0, 6 bins
+├── package.json                       ← name: surf-agent-skill (npm), version 7.0.0, 6 bins
 ├── README.md           ← you're here
 ├── CHANGELOG.md
 ├── LICENSE
@@ -825,10 +829,17 @@ research-poll <id>`. Sync research is capped at 50 s on purpose.
 │   ├── surf-research-skill.mjs        ← multi-provider web research CLI + `ai` subcommands
 │   ├── surf-free-skill.mjs            ← keyless search CLI
 │   └── surf-plan-skill.mjs            ← planning workflow CLI
+├── references/                        ← read on demand by the research orchestrator
+│   ├── burst-templates.md             ← the 8 sub-agent prompt templates (T1–T8)
+│   ├── surf-ai-cli.md                 ← CLI reference for writing delegation prompts
+│   ├── failure-modes.md               ← the 10 degradation cases
+│   ├── COSTS.md
+│   ├── parallel-api.md
+│   ├── tavily-api.md
+│   └── plan-workflow.md               ← deeper docs on the planning workflow (Normal + Deep ambiguity-sweep mode)
 ├── skills/
 │   ├── surf-plan-agent-skill/SKILL.md       ← planning (auto-routes to an ambiguity-sweep mode)
-│   ├── surf-free-agent-skill/SKILL.md       ← free keyless search
-│   └── surf-research-skill/SKILL.md   ← mirror of the root SKILL.md
+│   └── surf-free-agent-skill/SKILL.md       ← free keyless search
 ├── test/
 │   └── smoke.mjs                      ← offline suite: stubs fetch, temp HOME, 95 assertions
 ├── src/
@@ -870,11 +881,6 @@ research-poll <id>`. Sync research is capped at 50 s on purpose.
 │   └── install/
 │       ├── postinstall.mjs            ← cross-OS symlinks + skeleton keys.json
 │       └── preuninstall.mjs           ← cleanup our symlinks
-└── references/
-    ├── tavily-api.md
-    ├── parallel-api.md
-    ├── plan-workflow.md               ← deeper docs on the planning workflow (Normal + Deep ambiguity-sweep mode)
-    └── COSTS.md
 ```
 
 ---

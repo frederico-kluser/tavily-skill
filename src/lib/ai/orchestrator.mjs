@@ -40,6 +40,8 @@ import {
 } from './prompts.mjs';
 import { heuristicPlan, heuristicAnalysis, heuristicSynthesis } from './heuristics.mjs';
 
+const VERSION = '7.0.0';
+
 export const MODES = ['normal', 'unlimit'];
 
 // Share of the total time budget each phase may consume (normal mode only).
