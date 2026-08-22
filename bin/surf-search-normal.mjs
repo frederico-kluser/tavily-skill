@@ -51,7 +51,7 @@ For iterative deepening (analyze the harvest, search again, repeat) use:
   surf-search-unlimit "<question>"
 
 Setup (once):  surf-research-skill ai-setup     # stores the OpenRouter key
-Docs:          ~/.agents/skills/surf-research-skill/SKILL.md
+Docs:          ~/.agents/skills/surf-research-agent-skill/SKILL.md
 `;
 
 for (const sig of ['SIGTERM', 'SIGINT']) {

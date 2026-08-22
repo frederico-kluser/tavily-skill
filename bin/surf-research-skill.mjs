@@ -139,7 +139,7 @@ Examples:
 Need free, no-key search? Use the separate surf-free-skill (Wikipedia +
 DuckDuckGo). surf-research-skill itself requires an API key.
 Key & state are stored in ~/.config/surf/keys.json (chmod 600).
-Docs: ~/.agents/skills/surf-research-skill/SKILL.md`;
+Docs: ~/.agents/skills/surf-research-agent-skill/SKILL.md`;
 
 function die(msg, code = 1) {
   process.stderr.write(`❌ Error: ${msg}\n`);

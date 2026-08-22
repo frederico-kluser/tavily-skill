@@ -1,11 +1,11 @@
-// surf-skill — library entry point (npm package name = `surf-skill`).
+// surf-agent-skill — library entry point (npm package name = `surf-agent-skill`).
 // Named exports for each operation. CLI bins live at:
 //   bin/surf.mjs              (interactive setup + key validation)
 //   bin/surf-research-skill.mjs (multi-provider web search CLI)
 //   bin/surf-plan-skill.mjs   (research-grounded planning CLI)
 //
 // Usage:
-//   import { search, extract, research } from 'surf-skill';
+//   import { search, extract, research } from 'surf-agent-skill';
 //   const r = await search('claude api', { max: 3 });
 //
 // Keys are auto-discovered (opts > process.env > .env > ~/.config/surf/keys.json).

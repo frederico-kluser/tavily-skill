@@ -368,7 +368,7 @@ export async function runSurfAi(ctx, opts = {}) {
  *
  * dispatch() already handles key rotation and Tavily → Parallel → Brave
  * fallback. What it does NOT do on its own is drop to the free Wikipedia/DDG
- * tier, because surf-research-skill is a keyed product. surf-ai does drop
+ * tier, because surf-research-agent-skill is a keyed product. surf-ai does drop
  * there: a degraded answer beats no answer, and the agent is told which
  * provider answered.
  */

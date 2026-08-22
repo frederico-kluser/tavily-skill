@@ -55,7 +55,7 @@ Examples (your agent does the work):
   > design a webhook delivery service
   > architect pagination for my React table
 
-Docs: ~/.agents/skills/surf-plan-skill/SKILL.md`;
+Docs: ~/.agents/skills/surf-plan-agent-skill/SKILL.md`;
 
 function die(msg, code = 1) {
   process.stderr.write(`❌ Error: ${msg}\n`);
@@ -136,7 +136,7 @@ async function cmdDoctor() {
   } else {
     out(`\nsurf-research-skill: ✗ NOT installed`);
     out(`  ${surf.error || 'command not found'}`);
-    out(`  → Install: npm i -g surf-skill && surf-research-skill setup`);
+    out(`  → Install: npm i -g surf-agent-skill && surf-research-skill setup`);
     process.exitCode = 1;
   }
 
@@ -144,8 +144,8 @@ async function cmdDoctor() {
   // harness dir.
   const home = process.env.HOME || '';
   const checkDirs = [
-    `${home}/.claude/skills/surf-plan-skill/SKILL.md`,
-    `${home}/.agents/skills/surf-plan-skill/SKILL.md`,
+    `${home}/.claude/skills/surf-plan-agent-skill/SKILL.md`,
+    `${home}/.agents/skills/surf-plan-agent-skill/SKILL.md`,
   ];
   let foundSkill = false;
   for (const p of checkDirs) {
@@ -158,7 +158,7 @@ async function cmdDoctor() {
   }
   if (!foundSkill) {
     out(`\nSKILL.md:        ⚠ not found in ~/.claude/skills/ or ~/.agents/skills/`);
-    out(`  → reinstall: npm i -g surf-skill`);
+    out(`  → reinstall: npm i -g surf-agent-skill`);
     process.exitCode = process.exitCode || 1;
   }
 }

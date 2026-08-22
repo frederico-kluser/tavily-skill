@@ -53,7 +53,7 @@ Output:
   timeout, or use surf-search-normal instead.
 
 Setup (once):  surf-research-skill ai-setup     # stores the OpenRouter key
-Docs:          ~/.agents/skills/surf-research-skill/SKILL.md
+Docs:          ~/.agents/skills/surf-research-agent-skill/SKILL.md
 `;
 
 for (const sig of ['SIGTERM', 'SIGINT']) {

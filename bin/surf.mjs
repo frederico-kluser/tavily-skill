@@ -57,8 +57,8 @@ Providers:
 
 Keys live in:        ${KEYS_FILE} (chmod 600)
 Plans live in:       ~/.claude/plans/<slug>-<timestamp>.md (or ./plans/)
-SKILL.md (search):   ~/.agents/skills/surf-research-skill/SKILL.md
-SKILL.md (planning): ~/.agents/skills/surf-plan-skill/SKILL.md
+SKILL.md (search):   ~/.agents/skills/surf-research-agent-skill/SKILL.md
+SKILL.md (planning): ~/.agents/skills/surf-plan-agent-skill/SKILL.md
 `;
 
 function out(s = '') {
@@ -79,7 +79,7 @@ function fmtBytes(n) {
 
 async function detectSkills() {
   const home = os.homedir();
-  const skillsToCheck = ['surf-research-skill', 'surf-plan-skill', 'surf-free-skill'];
+  const skillsToCheck = ['surf-research-agent-skill', 'surf-plan-agent-skill', 'surf-free-agent-skill'];
   const found = {};
   for (const skill of skillsToCheck) {
     found[skill] = { dirs: [] };
@@ -207,7 +207,7 @@ async function cmdDoctor() {
   for (const [skill, info] of Object.entries(found)) {
     if (!info.dirs.length) {
       out(`  ✗ ${skill}: NOT found in any harness skill dir`);
-      out(`    → reinstall: npm i -g surf-skill@latest`);
+      out(`    → reinstall: npm i -g surf-agent-skill@latest`);
       process.exitCode = 1;
     } else {
       const sample = info.dirs[0];

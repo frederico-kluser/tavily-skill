@@ -62,7 +62,7 @@ function buildHeaders(key, version) {
   return {
     'x-api-key': key,
     'Content-Type': 'application/json',
-    'X-Client-Name': `surf-skill/${version || '2.0.0'}`,
+    'X-Client-Name': `surf-agent-skill/${version || '2.0.0'}`,
   };
 }
 

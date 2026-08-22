@@ -2,7 +2,7 @@
 //
 // Strategy:
 //   - Symlink the package root into each harness's skill dir
-//     (~/.claude/skills/surf-skill, ~/.agents/skills/surf-skill, etc.)
+//     (~/.claude/skills/<skill-name>, ~/.agents/skills/<skill-name>, etc.)
 //   - On Windows: try fs.symlink with type='junction' first (no admin needed
 //     for directories). If EPERM/ENOSYS, fall back to recursive copy.
 //   - Idempotent: re-running fixes stale symlinks, leaves user copies alone.
@@ -92,19 +92,19 @@ export async function unlinkIfOurs(link, expectedTarget) {
 }
 
 // Install ALL skills shipped by this package:
-//   - surf-research-skill → pkgRoot                         (root SKILL.md; search, parallel
-//                                                             fan-out, and async deep research,
-//                                                             auto-routed by the skill itself)
-//   - surf-plan-skill     → pkgRoot/skills/surf-plan-skill/ (planning workflow; auto-routes
-//                                                             into an ambiguity-sweep mode for
-//                                                             high-stakes/vague work)
+//   - surf-research-agent-skill → pkgRoot                         (root SKILL.md; search, parallel
+//                                                                   fan-out, and async deep research,
+//                                                                   auto-routed by the skill itself)
+//   - surf-plan-agent-skill     → pkgRoot/skills/surf-plan-agent-skill/ (planning workflow; auto-routes
+//                                                                   into an ambiguity-sweep mode for
+//                                                                   high-stakes/vague work)
 //
-// Each harness gets one symlink per skill (e.g. ~/.claude/skills/surf-research-skill,
-// …/surf-plan-skill; same for .agents/.codex/.pi).
+// Each harness gets one symlink per skill (e.g. ~/.claude/skills/surf-research-agent-skill,
+// …/surf-plan-agent-skill; same for .agents/.codex/.pi).
 const SKILLS = [
-  { name: 'surf-research-skill', subdir: null },                      // root of package
-  { name: 'surf-plan-skill',     subdir: 'skills/surf-plan-skill' },
-  { name: 'surf-free-skill',     subdir: 'skills/surf-free-skill' },  // free, keyless search
+  { name: 'surf-research-agent-skill', subdir: null },                            // root of package
+  { name: 'surf-plan-agent-skill',     subdir: 'skills/surf-plan-agent-skill' },
+  { name: 'surf-free-agent-skill',     subdir: 'skills/surf-free-agent-skill' },  // free, keyless search
 ];
 
 export async function installSkill(pkgRoot) {

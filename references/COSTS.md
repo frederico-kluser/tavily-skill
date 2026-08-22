@@ -61,10 +61,10 @@ credit cost, 2-5x lower latency, optimized for speed over absolute
 freshness. See `references/parallel-api.md` for the full latency/use-case
 table and when to reach for each tier.
 
-## surf-free-skill (wikipedia, ddg) — free, keyless
+## surf-free-agent-skill (wikipedia, ddg) — free, keyless
 
-The separate **`surf-free-skill`** answers `search` with two **free, no-API-key**
-providers (it does NOT share surf-research-skill's paid chain). Both are
+The separate **`surf-free-agent-skill`** answers `search` with two **free, no-API-key**
+providers (it does NOT share surf-research-agent-skill's paid chain). Both are
 estimated at **0 credits** by `lib/cost.mjs`.
 
 | Provider | Cost | Returns |
@@ -73,7 +73,7 @@ estimated at **0 credits** by `lib/cost.mjs`.
 | `ddg` (DuckDuckGo Instant Answer) | 0 | instant answers / entities (blank for most phrases) |
 
 Use `surf-free-skill "query"` for free lookups with zero setup.
-`surf-research-skill` itself requires a key (Tavily / Parallel / Brave).
+`surf-research-agent-skill` itself requires a key (Tavily / Parallel / Brave).
 
 ## Rules of thumb
 

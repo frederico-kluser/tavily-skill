@@ -1,19 +1,19 @@
 <p align="center">
-  <img src="logo.png" alt="surf-skill logo" width="160" />
+  <img src="logo.png" alt="surf-agent-skill logo" width="160" />
 </p>
 
-<h1 align="center">surf-skill</h1>
+<h1 align="center">surf-agent-skill</h1>
 
 <p align="center">
-  <a href="https://www.npmjs.com/package/surf-skill"><img src="https://img.shields.io/npm/v/surf-skill?style=flat-square&color=black" alt="npm" /></a>
-  <a href="https://www.npmjs.com/package/surf-skill"><img src="https://img.shields.io/npm/dt/surf-skill?style=flat-square&color=black" alt="downloads" /></a>
-  <a href="LICENSE"><img src="https://img.shields.io/npm/l/surf-skill?style=flat-square&color=black" alt="MIT" /></a>
-  <img src="https://img.shields.io/node/v/surf-skill?style=flat-square&color=black" alt="node>=18" />
+  <a href="https://www.npmjs.com/package/surf-agent-skill"><img src="https://img.shields.io/npm/v/surf-agent-skill?style=flat-square&color=black" alt="npm" /></a>
+  <a href="https://www.npmjs.com/package/surf-agent-skill"><img src="https://img.shields.io/npm/dt/surf-agent-skill?style=flat-square&color=black" alt="downloads" /></a>
+  <a href="LICENSE"><img src="https://img.shields.io/npm/l/surf-agent-skill?style=flat-square&color=black" alt="MIT" /></a>
+  <img src="https://img.shields.io/node/v/surf-agent-skill?style=flat-square&color=black" alt="node>=18" />
 </p>
 
 <p align="center">
   <strong>Autonomous web research for AI coding agents.</strong><br/>
-  You state your situation; the CLI runs the whole loop — an LLM plans the queries, they fan out concurrently across <strong>Tavily</strong>, <strong>Parallel AI</strong> and <strong>Brave</strong>, the LLM analyzes what is still open, searches again, and writes the cited answer. Key rotation, provider fallback and model failover all live inside the CLI. Ships a separate free, keyless search skill (<strong>surf-free-skill</strong>: Wikipedia + DuckDuckGo, no API key).
+  You state your situation; the CLI runs the whole loop — an LLM plans the queries, they fan out concurrently across <strong>Tavily</strong>, <strong>Parallel AI</strong> and <strong>Brave</strong>, the LLM analyzes what is still open, searches again, and writes the cited answer. Key rotation, provider fallback and model failover all live inside the CLI. Ships a separate free, keyless search skill (<strong>surf-free-agent-skill</strong>: Wikipedia + DuckDuckGo, no API key).
 </p>
 
 ---
@@ -71,9 +71,9 @@ surf-research-skill ┘        │       ├─▶ Brave     search (own index)
                              └─▶ OpenRouter ─▶ DeepSeek V4 Pro
                                                plan · analyze · synthesize
 
-free search   ──▶ surf-free-skill ──▶ Wikipedia + DuckDuckGo (keyless, no API key)
+free search   ──▶ surf-free-agent-skill ──▶ Wikipedia + DuckDuckGo (keyless, no API key)
 
-plan / design ──▶ surf-plan-skill ──▶ Normal (research-grounded)
+plan / design ──▶ surf-plan-agent-skill ──▶ Normal (research-grounded)
                           │         └ Deep  (+ ambiguity sweep, auto on
                           │                   vague/high-stakes work)
                           └─▶ calls surf-ai for its own research (cited)
@@ -82,8 +82,8 @@ plan / design ──▶ surf-plan-skill ──▶ Normal (research-grounded)
 | | |
 |---|---|
 | **Status** | v5.4.0 (npm) |
-| **Install** | `npm i -g surf-skill` (Linux · macOS · Windows) |
-| **Skills shipped** | `surf-research-skill` (surf-ai) · `surf-plan-skill` · `surf-free-skill` |
+| **Install** | `npm i -g surf-agent-skill` (Linux · macOS · Windows) |
+| **Skills shipped** | `surf-research-agent-skill` (surf-ai) · `surf-plan-agent-skill` · `surf-free-agent-skill` |
 | **Bins shipped** | `surf`, `surf-search-normal`, `surf-search-unlimit`, `surf-research-skill`, `surf-plan-skill`, `surf-free-skill` |
 | **Runtime** | Node ≥ 18. Zero npm deps. |
 | **Storage** | `~/.config/surf/keys.json` (chmod 600) — the only place a key is ever written. CLI reads search keys from there only; `OPENROUTER_API_KEY` is also accepted from env, in memory. Library mode reads env/`.env` too ([Security](#security)). |
@@ -93,7 +93,7 @@ plan / design ──▶ surf-plan-skill ──▶ Normal (research-grounded)
 ## Quickstart (60 seconds)
 
 ```bash
-npm i -g surf-skill          # installs 3 skills + 6 bins (cross-OS)
+npm i -g surf-agent-skill          # installs 3 skills + 6 bins (cross-OS)
 surf                         # interactive: add keys with LIVE validation
                              #   ✓ valid (tavily, HTTP 200, 1.2s, 1 credit)
                              #   ✗ invalid (auth, HTTP 401) — NOT saved
@@ -107,7 +107,7 @@ surf-search-normal "does OpenRouter enforce strict json_schema on DeepSeek?" \
 
 # Or ask an AI agent:
 > make a plan for adding rate limiting to my Express API
-# → surf-plan-skill kicks in: reads the project, runs surf-ai research,
+# → surf-plan-agent-skill kicks in: reads the project, runs surf-ai research,
 #   asks 3-5 researched questions, writes ~/.claude/plans/<slug>-<ts>.md
 #
 # Research is gated, not optional: the agent may not present a plan —
@@ -147,7 +147,7 @@ Bash call `timeout: 600000`, on Pi core just run it, on GH Copilot CLI run
 
 ```bash
 # One-liner cross-OS install (Linux, macOS, Windows)
-npm i -g surf-skill
+npm i -g surf-agent-skill
 
 # Postinstall symlinks all 3 skills into every supported harness, initializes
 # ~/.config/surf/keys.json, and prints a hint. Then:
@@ -181,11 +181,11 @@ surf-research-skill project-config
 ### Use as a Node library
 
 ```bash
-npm i surf-skill
+npm i surf-agent-skill
 ```
 
 ```js
-import { search, searchParallel, extract, research } from 'surf-skill';
+import { search, searchParallel, extract, research } from 'surf-agent-skill';
 
 // Auto-discovers keys: opts > process.env > .env > ~/.config/surf/keys.json
 const r = await search('claude api', { max: 3 });
@@ -211,7 +211,7 @@ console.log(job.data.content);
 **The whole surf-ai loop is importable too** — same engine as the CLI:
 
 ```js
-import { runSurfAi } from 'surf-skill/ai';
+import { runSurfAi } from 'surf-agent-skill/ai';
 
 const result = await runSurfAi(
   {
@@ -258,7 +258,7 @@ coverage is auditable (`--ledger`), and the cost is visible in the footer.
 ### 2. One key, one provider, one outage away from a broken loop
 
 Most agent search skills are **1-to-1** with a provider. When a key dies or a
-provider has an outage, the loop breaks. `surf-research-skill` is a connector:
+provider has an outage, the loop breaks. `surf-research-agent-skill` is a connector:
 
 - **Multi-key per provider.** Add as many keys as you want; rotation is
   automatic on `401`/`403`/`402` (auth, insufficient credits) or persistent
@@ -285,7 +285,7 @@ provider has an outage, the loop breaks. `surf-research-skill` is a connector:
 
 ## Supported agents
 
-> **What the installer does and doesn't do.** `npm i -g surf-skill` symlinks
+> **What the installer does and doesn't do.** `npm i -g surf-agent-skill` symlinks
 > the three skills into every harness skill dir it knows
 > (`~/.agents/skills/`, `~/.claude/skills/`, `~/.codex/skills/`,
 > `~/.pi/agent/skills/`) and creates `~/.config/surf/keys.json`. It writes
@@ -296,7 +296,7 @@ provider has an outage, the loop breaks. `surf-research-skill` is a connector:
 ### Claude Code
 
 ```bash
-npm i -g surf-skill
+npm i -g surf-agent-skill
 # Symlinks the 3 skills into ~/.claude/skills/. Writes no settings.
 
 # Per-project, to raise the 120 s default to 300 s:
@@ -307,7 +307,7 @@ surf-research-skill project-config
 #                "BASH_MAX_TIMEOUT_MS": "600000" } }
 ```
 
-The skill becomes available at `~/.claude/skills/surf-research-skill/`. In a
+The skill becomes available at `~/.claude/skills/surf-research-agent-skill/`. In a
 Claude Code session, just ask: "search the web for X" — the agent invokes
 `surf-search-normal` via Bash and gets back a cited answer.
 
@@ -323,10 +323,10 @@ background** rather than killing it — but don't rely on that: for
 ⚠️ **Default bash timeout is 30 s — the most fragile of the three.**
 
 ```bash
-npm i -g surf-skill
+npm i -g surf-agent-skill
 # Symlinks the 3 skills into ~/.agents/skills/ — the canonical skill dir
-# GH Copilot CLI reads (~/.agents/skills/surf-research-skill, …/surf-plan-skill,
-# …/surf-free-skill). Nothing is written under ~/.copilot/.
+# GH Copilot CLI reads (~/.agents/skills/surf-research-agent-skill, …/surf-plan-agent-skill,
+# …/surf-free-agent-skill). Nothing is written under ~/.copilot/.
 ```
 
 **Per-project**, run inside the project root:
@@ -353,7 +353,7 @@ silently to SIGTERM.
 ### Pi Coding Agent
 
 ```bash
-npm i -g surf-skill
+npm i -g surf-agent-skill
 # Symlinks the skills into ~/.pi/agent/skills/.
 ```
 
@@ -684,8 +684,8 @@ surf-research-skill search "x" --provider parallel
 
 ## Onboarding
 
-`surf-research-skill` needs an API key. (For free, no-key search, use the
-separate **`surf-free-skill`** — no setup at all.)
+`surf-research-agent-skill` needs an API key. (For free, no-key search, use the
+separate **`surf-free-agent-skill`** — no setup at all.)
 
 ```bash
 # 1. Wizard (recommended in a TTY) — prompts Tavily, Parallel, Brave, OpenRouter
@@ -712,7 +712,7 @@ surf-research-skill search "test"
 surf-free-skill "your query"
 
 # 5. Environment / library mode
-TAVILY_API_KEY=tvly-... node -e "import('surf-skill').then(m => m.search('x'))"
+TAVILY_API_KEY=tvly-... node -e "import('surf-agent-skill').then(m => m.search('x'))"
 export OPENROUTER_API_KEY=sk-or-v1-...   # picked up by surf-ai, never persisted
 export OPENROUTER_API_KEYS=sk-a,sk-b     # …and rotated like any other key list
 ```
@@ -812,12 +812,12 @@ research-poll <id>`. Sync research is capped at 50 s on purpose.
 
 ```text
 .
-├── package.json                       ← name: surf-skill (npm), version 5.4.0, 6 bins
+├── package.json                       ← name: surf-agent-skill (npm), version 5.4.0, 6 bins
 ├── README.md           ← you're here
 ├── CHANGELOG.md
 ├── LICENSE
 ├── logo.png
-├── SKILL.md                           ← surf-research-skill / surf-ai (root of pkg)
+├── SKILL.md                           ← surf-research-agent-skill / surf-ai (root of pkg)
 ├── bin/
 │   ├── surf.mjs                       ← interactive setup + key validation
 │   ├── surf-search-normal.mjs         ← surf-ai, ONE round (fits the bash timeout)
@@ -826,8 +826,8 @@ research-poll <id>`. Sync research is capped at 50 s on purpose.
 │   ├── surf-free-skill.mjs            ← keyless search CLI
 │   └── surf-plan-skill.mjs            ← planning workflow CLI
 ├── skills/
-│   ├── surf-plan-skill/SKILL.md       ← planning (auto-routes to an ambiguity-sweep mode)
-│   ├── surf-free-skill/SKILL.md       ← free keyless search
+│   ├── surf-plan-agent-skill/SKILL.md       ← planning (auto-routes to an ambiguity-sweep mode)
+│   ├── surf-free-agent-skill/SKILL.md       ← free keyless search
 │   └── surf-research-skill/SKILL.md   ← mirror of the root SKILL.md
 ├── test/
 │   └── smoke.mjs                      ← offline suite: stubs fetch, temp HOME, 95 assertions
@@ -857,7 +857,7 @@ research-poll <id>`. Sync research is capped at 50 s on purpose.
 │   │   ├── setup.mjs                  ← interactive onboarding (with validation)
 │   │   ├── project-config.mjs         ← surf-research-skill project-config
 │   │   ├── progress.mjs               ← stderr progress events
-│   │   ├── check-surf-skill.mjs       ← detect companion CLI in PATH
+│   │   ├── check-surf-agent-skill.mjs       ← detect companion CLI in PATH
 │   │   ├── harness-install.mjs        ← cross-OS symlink install for 3 skills
 │   │   ├── api/                       ← library search/extract/crawl/map/research
 │   │   └── providers/
@@ -893,7 +893,7 @@ research-poll <id>`. Sync research is capped at 50 s on purpose.
   stripped back out before any write to `keys.json` (`snapshotForPersist`,
   `src/lib/ai/openrouter.mjs`).
 - **Library mode is different by design.** `discoverKeys()` (`src/env.mjs`),
-  which every `import { search, … } from 'surf-skill'` call goes through,
+  which every `import { search, … } from 'surf-agent-skill'` call goes through,
   resolves keys for *all* providers in this order: explicit options →
   `process.env` (`TAVILY_API_KEY(S)`, `PARALLEL_*`, `BRAVE_*`, `OPENROUTER_*`)
   → a `.env` in the current working directory → `keys.json` as a last resort.

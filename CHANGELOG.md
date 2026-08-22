@@ -245,7 +245,7 @@ so neither is an option.
 ### Migration
 
 ```bash
-npm i -g surf-skill@latest
+npm i -g surf-agent-skill@latest
 surf-free-skill "your query"        # free, keyless — no key needed
 surf-research-skill --version       # 5.2.0 (still requires a key)
 ```
@@ -293,7 +293,7 @@ just renaming files — see Sources below.
   `LEGACY_NAMES` gained `surf-search-skill`, `surf-parallel-skill`,
   `surf-deep-plan-skill` so upgrading cleanly removes the old symlinks
   before creating the new ones (same discipline as the v4.0.0 rename).
-- npm package name is unchanged (`surf-skill`); `npm i -g surf-skill`
+- npm package name is unchanged (`surf-agent-skill`); `npm i -g surf-agent-skill`
   continues to work and now installs 2 skills + 3 bins.
 
 ### Added
@@ -345,7 +345,7 @@ just renaming files — see Sources below.
 ### Migration
 
 ```bash
-npm i -g surf-skill@latest
+npm i -g surf-agent-skill@latest
 
 # Verify:
 surf --version                  # 5.0.0
@@ -513,7 +513,7 @@ Root `SKILL.md` (search skill): `allowed-tools: bash` →
 ### Upgrading
 
 ```bash
-npm i -g surf-skill@latest
+npm i -g surf-agent-skill@latest
 surf-plan-skill --version    # 4.1.0
 ```
 
@@ -525,7 +525,7 @@ WebSearch), and the delivered plan must contain a Research Ledger.
 
 ### The bug
 
-`npm i -g surf-skill@4.0.0` installed the package but did **not** create
+`npm i -g surf-agent-skill@4.0.0` installed the package but did **not** create
 the `surf-search-skill` command on PATH. Only `surf` and
 `surf-plan-skill` symlinks were created. Calling `surf-search-skill …`
 produced `command not found`, breaking the skill end-to-end.
@@ -556,7 +556,7 @@ so no `surf-search-skill` symlink was ever created.
 ### Upgrading
 
 ```bash
-npm i -g surf-skill@latest
+npm i -g surf-agent-skill@latest
 surf-search-skill --version   # 4.0.1
 ```
 
@@ -576,8 +576,8 @@ the planning skill had it. v4.0.0 makes both consistent:
 - **Bin `surf-skill` → `surf-search-skill`** (renamed; old bin removed —
   scripts that called `surf-skill ...` need to update).
 
-The **npm package name stays `surf-skill`** (it's the bundle name; the
-two skills + 3 bins live inside it). So `npm i -g surf-skill` continues
+The **npm package name stays `surf-agent-skill`** (it's the bundle name; the
+two skills + 3 bins live inside it). So `npm i -g surf-agent-skill` continues
 to install the package, just exposing different binaries inside.
 
 ### Breaking changes for v2.x users
@@ -605,7 +605,7 @@ to install the package, just exposing different binaries inside.
 - All `surf-skill` references in skill names, CLI commands, banners,
   HELP text, error messages, postinstall output, and docs updated to
   `surf-search-skill`. npm package name + URLs + library imports remain
-  `surf-skill` (correct — that's the npm distribution unit).
+  `surf-agent-skill` (correct — that's the npm distribution unit).
 - `harness-install.mjs::SKILLS` array now lists `surf-search-skill` as
   the search skill (was `surf-skill`).
 - `harness-install.mjs::LEGACY_NAMES` adds `surf-skill` and `surf-plan`
@@ -641,9 +641,9 @@ to install the package, just exposing different binaries inside.
 
 ### What didn't change
 
-- npm package name: still `surf-skill`.
-- npm package install: still `npm i -g surf-skill`.
-- Library imports: still `import { search } from 'surf-skill'`.
+- npm package name: still `surf-agent-skill`.
+- npm package install: still `npm i -g surf-agent-skill`.
+- Library imports: still `import { search } from 'surf-agent-skill'`.
 - Provider adapter behavior, dispatch fallback, validator logic,
   keys.json schema, plan-file format, harness directories — all
   unchanged from v3.0.1.
@@ -653,7 +653,7 @@ to install the package, just exposing different binaries inside.
 
 ```bash
 # Upgrade:
-npm i -g surf-skill@latest
+npm i -g surf-agent-skill@latest
 
 # Verify all 3 bins:
 surf --version              # 4.0.0
@@ -666,7 +666,7 @@ ls ~/.agents/skills/        # same
 ```
 
 Find/replace in your scripts: `surf-skill ` → `surf-search-skill ` (mind
-the trailing space so you don't break `npm i -g surf-skill`).
+the trailing space so you don't break `npm i -g surf-agent-skill`).
 
 ---
 
@@ -676,7 +676,7 @@ v3.0.0 shipped to GitHub with a partial `package.json` edit: the new
 `surf` and `surf-plan-skill` `bin` entries were missing, the `version`
 field wasn't bumped (still `2.1.1`), and the description didn't mention
 the planning skill. The skill code itself was fine, but `npm i -g
-surf-skill@3.0.0` would only install the `surf-skill` binary, hiding the
+surf-agent-skill@3.0.0` would only install the `surf-skill` binary, hiding the
 new `surf` wrapper and `surf-plan-skill` CLI. v3.0.1 corrects the
 manifest so the bundle actually exposes all 3 bins on install.
 
@@ -692,7 +692,7 @@ What changed in v3.0.1 vs v3.0.0:
 No code-behavior changes vs v3.0.0; release v3.0.0 is superseded.
 
 If you installed v3.0.0 by hand from GitHub: upgrade with
-`npm i -g surf-skill@latest` and `surf doctor` to confirm all 3 bins
+`npm i -g surf-agent-skill@latest` and `surf doctor` to confirm all 3 bins
 are present.
 
 ---
@@ -702,7 +702,7 @@ are present.
 ### What's new
 
 This release reshapes the package from one skill into **two skills + a
-top-level setup wrapper**, all installed by `npm i -g surf-skill`.
+top-level setup wrapper**, all installed by `npm i -g surf-agent-skill`.
 
 **New skill: `surf-plan-skill`** — research-driven execution planning
 that follows a strict 6-phase workflow (preflight → project discovery →
@@ -766,7 +766,7 @@ Existing v2.x users: the surf-skill symlink still points at package root
 ### Migration from v2.x
 
 ```bash
-npm i -g surf-skill           # picks up v3.0.0
+npm i -g surf-agent-skill           # picks up v3.0.0
 surf doctor                   # confirm both skills + keys
 surf                          # interactive — add more keys if needed
 ```
@@ -779,7 +779,7 @@ with `--skip-validate` if needed).
 ### Migration from the standalone `surf-plan` v1.0.0 (now retired)
 
 The standalone `frederico-kluser/surf-plan` repo and the unpublished
-`surf-plan` npm name are retired. Use `npm i -g surf-skill` — it bundles
+`surf-plan` npm name are retired. Use `npm i -g surf-agent-skill` — it bundles
 the planning skill as `surf-plan-skill`. The SKILL.md frontmatter name
 changed from `surf-plan` → `surf-plan-skill`.
 
@@ -902,7 +902,7 @@ None. CLI and library APIs are backward compatible.
 
 ### What's new
 
-- **One-liner cross-OS install via npm.** `npm i -g surf-skill` works on
+- **One-liner cross-OS install via npm.** `npm i -g surf-agent-skill` works on
   Linux, macOS, and Windows. Postinstall script creates symlinks into all
   4 supported agent harnesses (Claude Code, OpenCode, Codex CLI, Pi
   Coding Agent), initializes `~/.config/surf/keys.json`, and cleans up
@@ -910,7 +910,7 @@ None. CLI and library APIs are backward compatible.
   Windows without Developer Mode.
 - **Library mode for Node / Next.js / Express.** Import named functions:
   ```js
-  import { search, extract, research } from 'surf-skill';
+  import { search, extract, research } from 'surf-agent-skill';
   const r = await search('claude api', { max: 3 });
   ```
   Auto-discovers keys from `opts → process.env → .env → ~/.config/surf/keys.json`
@@ -934,14 +934,14 @@ None. CLI and library APIs are backward compatible.
   rm -rf ~/.agents/skills/surf-skill ~/.claude/skills/surf-skill \
          ~/.codex/skills/surf-skill ~/.pi/agent/skills/surf-skill
   # Install via npm
-  npm i -g surf-skill
+  npm i -g surf-agent-skill
   # Your ~/.config/surf/keys.json is preserved.
   surf-skill keys list
   ```
 - **Repo layout**: `skills/surf-skill/*` moved to root. The package now
   lives directly at the repo root for npm publishing. The `install.sh`
   script is gone (replaced by `src/install/postinstall.mjs`).
-- **Package name** unchanged (`surf-skill`).
+- **Package name** unchanged (`surf-agent-skill`).
 - **CLI surface unchanged** — all commands, flags, and behavior identical.
 - **State location unchanged** — `~/.config/surf/keys.json` and
   `~/.cache/surf/` preserved.

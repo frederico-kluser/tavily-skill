@@ -20,8 +20,8 @@ const pkgRoot = path.resolve(__dirname, '..', '..');
 const isGlobal = process.env.npm_config_global === 'true';
 // Some CI environments don't set npm_config_global; also treat the case where
 // __dirname is under a global node_modules path as "global enough".
-const looksGlobal = /node_modules\/surf-skill\/src\/install$/.test(__dirname) ||
-                    /node_modules\\surf-skill\\src\\install$/.test(__dirname);
+const looksGlobal = /node_modules\/surf-agent-skill\/src\/install$/.test(__dirname) ||
+                    /node_modules\\surf-agent-skill\\src\\install$/.test(__dirname);
 // Dev override: `SURF_DEV=1 node src/install/postinstall.mjs` simulates the
 // global install from the source checkout (used by `npm run dev:install`).
 const isDev = process.env.SURF_DEV === '1';
@@ -29,9 +29,9 @@ const isDev = process.env.SURF_DEV === '1';
 async function main() {
   if (!isGlobal && !looksGlobal && !isDev) {
     // Local install: don't touch user system. Library mode.
-    process.stdout.write('surf-skill installed as a library (npm i surf-skill).\n');
-    process.stdout.write('  → For the global CLI: npm i -g surf-skill\n');
-    process.stdout.write('  → To import: import { search } from "surf-skill"\n');
+    process.stdout.write('surf-agent-skill installed as a library (npm i surf-agent-skill).\n');
+    process.stdout.write('  → For the global CLI: npm i -g surf-agent-skill\n');
+    process.stdout.write('  → To import: import { search } from "surf-agent-skill"\n');
     return;
   }
 
@@ -68,7 +68,7 @@ async function main() {
   if (skel.created) process.stdout.write(`✓ created ${skel.created} (chmod 600)\n`);
 
   process.stdout.write('\n');
-  process.stdout.write('✓ surf-skill 5.4.0 installed globally — 3 skills + 6 bins:\n');
+  process.stdout.write('✓ surf-agent-skill 5.4.0 installed globally — 3 skills + 6 bins:\n');
   process.stdout.write('    surf                  interactive setup with live key validation\n');
   process.stdout.write('    surf-research-skill   web research: search, parallel fan-out, or async\n');
   process.stdout.write('                          deep research — auto-routed by the skill itself\n');
@@ -84,7 +84,7 @@ async function main() {
 
 main().catch(e => {
   // NEVER fail npm install. Print warning + exit 0.
-  process.stderr.write(`surf-skill postinstall warning: ${e.message}\n`);
+  process.stderr.write(`surf-agent-skill postinstall warning: ${e.message}\n`);
   process.stderr.write('  (skill is installed; harness symlinks may need manual setup)\n');
   process.exit(0);
 });

@@ -50,8 +50,8 @@ export const FALLBACK_MODELS = [
 const DEFAULT_TIMEOUT_MS = Number(process.env.SURF_AI_TIMEOUT_MS) || 120_000;
 // Sideline a key for this long after it exhausts its 429 retries.
 const RATE_LIMIT_COOLDOWN_MS = Number(process.env.SURF_AI_COOLDOWN_MS) || 45_000;
-const REFERER = 'https://github.com/frederico-kluser/surf-skill';
-const TITLE = 'surf-skill';
+const REFERER = 'https://github.com/frederico-kluser/surf-agent-skill';
+const TITLE = 'surf-agent-skill';
 
 export class AiUnavailableError extends Error {
   constructor(message, attempts = []) {

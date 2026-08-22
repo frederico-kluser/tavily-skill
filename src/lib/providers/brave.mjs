@@ -52,7 +52,7 @@ function buildHeaders(key, version) {
   return {
     'X-Subscription-Token': key,
     'Accept': 'application/json',
-    'X-Client-Name': `surf-skill/${version || '2.1.0'}`,
+    'X-Client-Name': `surf-agent-skill/${version || '2.1.0'}`,
   };
 }
 

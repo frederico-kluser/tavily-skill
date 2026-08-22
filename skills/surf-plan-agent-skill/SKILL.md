@@ -1,5 +1,5 @@
 ---
-name: surf-plan-skill
+name: surf-plan-agent-skill
 description: >-
   Generates a research-grounded execution plan for a coding task. MUST BE USED
   whenever the user asks for a plan, design, architecture, or spec — including
@@ -22,7 +22,7 @@ argument-hint: "[task to plan, e.g. 'add rate limiting to the Express API']"
 allowed-tools: Bash(surf-search-normal:*), Bash(surf-search-unlimit:*), Bash(surf-research-skill:*), Bash(surf-plan-skill:*), Read, Glob, Grep, Write, Edit, WebSearch, WebFetch, AskUserQuestion
 metadata:
   version: "5.4.0"
-  requires: "node>=18; surf-search-normal + surf-research-skill in PATH (npm i -g surf-skill) for Layer A research; an OpenRouter key (surf-research-skill ai-setup) for surf-ai synthesis — without it Layer A degrades to raw hits; harness WebSearch/WebFetch as Layer B fallback; plan dir at ~/.claude/plans/ (or ./plans/ if it exists in the project)"
+  requires: "node>=18; surf-search-normal + surf-research-skill in PATH (npm i -g surf-agent-skill) for Layer A research; an OpenRouter key (surf-research-skill ai-setup) for surf-ai synthesis — without it Layer A degrades to raw hits; harness WebSearch/WebFetch as Layer B fallback; plan dir at ~/.claude/plans/ (or ./plans/ if it exists in the project)"
 ---
 
 # surf-plan — research-grounded execution planning, two depths
@@ -214,7 +214,7 @@ surf-research-skill --version
 - Neither → **Layer C**: tell the user:
 
 > I need web research to write a grounded plan, and neither
-> `surf-research-skill` (install: `npm i -g surf-skill && surf-research-skill
+> `surf-research-skill` (install: `npm i -g surf-agent-skill && surf-research-skill
 > setup`) nor a native WebSearch tool is available. Want me to proceed with
 > an unresearched plan? It will be labeled NOT WEB-RESEARCHED.
 
@@ -478,7 +478,7 @@ conflict** — don't silently pick one.
   snippets alone are too thin to cite confidently.
 - Multiple independent unknowns at once (Deep mode's grounding phase) →
   `search-parallel` with one query per unknown, fanned out concurrently —
-  see **surf-research-skill** for the full fan-out protocol (ledger,
+  see **surf-research-agent-skill** for the full fan-out protocol (ledger,
   dedup, gate).
 
 **5. Never present an option you didn't find.** A clarifying question's

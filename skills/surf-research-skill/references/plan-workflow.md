@@ -1,13 +1,13 @@
-# surf-plan-skill workflow — deeper docs
+# surf-plan-agent-skill workflow — deeper docs
 
-This file expands on the workflow defined in `skills/surf-plan-skill/SKILL.md`.
+This file expands on the workflow defined in `skills/surf-plan-agent-skill/SKILL.md`.
 It's for humans reviewing the methodology, not for the agent (which only
 reads SKILL.md).
 
 ## v5.0.0 — one skill, two depths
 
 Through v4.2.0 this project shipped two separate planning skills:
-`surf-plan-skill` (research-grounded, 6 phases) and `surf-deep-plan-skill`
+`surf-plan-agent-skill` (research-grounded, 6 phases) and `surf-deep-plan-skill`
 (the same, plus a mandatory front-loaded ambiguity sweep and a second gate
 lock). v5.0.0 folds the second into the first as an internal **Deep mode**
 that the skill routes into automatically — see "Mode Decision" below. There
@@ -98,7 +98,7 @@ Output: agent's mental model of "what already exists" + file paths, plus a
 ## Phase 2 — Mode Decision (new in v5.0.0)
 
 Why: the old world made the user (or the calling agent) pick between
-`surf-plan-skill` and `surf-deep-plan-skill` up front, based on trigger
+`surf-plan-agent-skill` and `surf-deep-plan-skill` up front, based on trigger
 phrases — easy to get wrong, and it meant the ambiguity sweep was
 all-or-nothing at the *skill-selection* level rather than a judgment made
 *after* actually reading the project. Now one skill reads the project first,
@@ -185,7 +185,7 @@ found approach — never invented.
 
 How: for each ambiguity with an externally-verifiable answer, fan out
 parallel research (one query per unknown × angle) via `search-parallel`.
-See surf-research-skill's fan-out protocol (ledger, dedup, gate) — this
+See surf-research-agent-skill's fan-out protocol (ledger, dedup, gate) — this
 reuses it directly rather than duplicating it.
 
 ### Clarify (higher volume than Normal)
@@ -291,14 +291,14 @@ genuinely need more, the task is too big — slice it.
 - URLs: full https links, no trackers or auth tokens.
 - Code references: `path/to/file.ext:LINE` format, parseable by most IDEs.
 
-## What surf-plan-skill is NOT
+## What surf-plan-agent-skill is NOT
 
 - Not an execution engine. Once the plan is written, hand it to another
   tool/agent/human.
 - Not a project manager. It's per-task, not multi-task.
 - Not a code generator. It writes a plan, not code.
 - Not a replacement for Plan Mode. Plan Mode is the harness's interactive
-  approval flow; surf-plan-skill is the research+evidence methodology that
+  approval flow; surf-plan-agent-skill is the research+evidence methodology that
   runs *inside* it (Layers make that possible). They complement.
 - Not two skills anymore. Deep mode is a path through this one skill, not a
   separate trigger to remember.

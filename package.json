@@ -1,7 +1,7 @@
 {
-  "name": "surf-skill",
+  "name": "surf-agent-skill",
   "version": "5.4.0",
-  "description": "Autonomous web research for AI coding agents. surf-ai runs the entire loop inside the CLI — an LLM (DeepSeek v4 Pro via OpenRouter) plans the queries, they all run concurrently across Tavily + Parallel + Brave with automatic key rotation and provider fallback, the LLM analyzes what is still open, launches more searches, and writes the final cited answer in the shape the calling agent asked for. Two modes: surf-search-normal (one round, fitted inside the agent's bash timeout) and surf-search-unlimit (as many rounds as the question needs). Also ships surf-plan-skill (research-driven execution planning) and surf-free-skill (free keyless search via Wikipedia + DuckDuckGo), plus `surf` interactive setup with live key validation and a Node library.",
+  "description": "Autonomous web research for AI coding agents. surf-ai runs the entire loop inside the CLI — an LLM (DeepSeek v4 Pro via OpenRouter) plans the queries, they all run concurrently across Tavily + Parallel + Brave with automatic key rotation and provider fallback, the LLM analyzes what is still open, launches more searches, and writes the final cited answer in the shape the calling agent asked for. Two modes: surf-search-normal (one round, fitted inside the agent's bash timeout) and surf-search-unlimit (as many rounds as the question needs). Also ships surf-plan-agent-skill (research-driven execution planning) and surf-free-agent-skill (free keyless search via Wikipedia + DuckDuckGo), plus `surf` interactive setup with live key validation and a Node library.",
   "type": "module",
   "main": "./src/index.mjs",
   "exports": {
@@ -76,11 +76,11 @@
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/frederico-kluser/surf-skill.git"
+    "url": "git+https://github.com/frederico-kluser/surf-agent-skill.git"
   },
-  "homepage": "https://github.com/frederico-kluser/surf-skill#readme",
+  "homepage": "https://github.com/frederico-kluser/surf-agent-skill#readme",
   "bugs": {
-    "url": "https://github.com/frederico-kluser/surf-skill/issues"
+    "url": "https://github.com/frederico-kluser/surf-agent-skill/issues"
   },
   "license": "MIT",
   "author": "frederico-kluser"

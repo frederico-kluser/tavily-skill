@@ -1,5 +1,5 @@
 ---
-name: surf-research-skill
+name: surf-research-agent-skill
 description: >-
   Autonomous web research: you state your situation, the CLI does the entire
   research loop and hands back a finished, cited answer. An LLM (DeepSeek V4
@@ -19,16 +19,16 @@ description: >-
   "research X", "investigate", "compare X vs Y", "deep dive", "find everything
   about", "busca na web", "pesquise", "investigue", "compare X e Y", "pesquisa
   profunda", "ache tudo sobre", "levantamento completo". Do NOT use for local
-  files, git, code editing, or writing an execution plan (see surf-plan-skill).
+  files, git, code editing, or writing an execution plan (see surf-plan-agent-skill).
 license: MIT
 argument-hint: "<question, URL, or topic to search / research>"
 allowed-tools: Bash(surf-search-normal:*), Bash(surf-search-unlimit:*), Bash(surf-research-skill:*), Bash(surf:*), Read, Write, Grep, Glob, WebSearch, WebFetch
 metadata:
   version: "5.4.0"
-  requires: "node>=18; install via `npm i -g surf-skill`; search keys via `surf` or `surf-research-skill setup`; the surf-ai LLM key via `surf-research-skill ai-setup` (or an exported OPENROUTER_API_KEY); per-project bash timeout via `surf-research-skill project-config`"
+  requires: "node>=18; install via `npm i -g surf-agent-skill`; search keys via `surf` or `surf-research-skill setup`; the surf-ai LLM key via `surf-research-skill ai-setup` (or an exported OPENROUTER_API_KEY); per-project bash timeout via `surf-research-skill project-config`"
 ---
 
-# surf-research-skill — the CLI does the research, you get the answer
+# surf-research-agent-skill — the CLI does the research, you get the answer
 
 **You do not orchestrate research any more. The CLI does.**
 
@@ -78,10 +78,10 @@ not hand you an error to babysit.**
 ## When NOT to use
 
 - Local file ops, git, deployments, code editing.
-- Writing an execution plan — that's **surf-plan-skill** (it calls this skill).
+- Writing an execution plan — that's **surf-plan-agent-skill** (it calls this skill).
 - A single trivial fact you could not possibly be wrong about.
 - Free keyless lookups when the user explicitly wants no API key —
-  that's **surf-free-skill**.
+  that's **surf-free-agent-skill**.
 
 ---
 

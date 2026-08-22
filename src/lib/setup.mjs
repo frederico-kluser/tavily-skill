@@ -56,7 +56,7 @@ Add another key later with:
 ⚠  GitHub Copilot CLI users: this step is REQUIRED. Copilot's default bash
    timeout is 30s and surf-research-skill needs more (most commands run 3–60s).
 
-Docs: SKILL.md  ·  Repo: https://github.com/frederico-kluser/surf-skill
+Docs: SKILL.md  ·  Repo: https://github.com/frederico-kluser/surf-agent-skill
 `;
 
 async function promptKeys(rl, provider, existing = []) {

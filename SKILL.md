@@ -1,5 +1,5 @@
 ---
-name: surf-research-skill
+name: surf-research-agent-skill
 description: >-
   Orquestrador de pesquisa web multi-agente. Você NUNCA faz a pesquisa — apenas
   analisa a pergunta, decompõe em ondas de sub-agentes paralelos, recalcula o
@@ -8,12 +8,12 @@ description: >-
   e commita tudo ao final sem perguntar nada ao usuário. Cada sub-agente usa o
   CLI surf-ai (surf-search-normal / surf-search-unlimit) como ferramenta de
   busca e entrega um handoff estruturado com o que fez e descobriu. Invocação:
-  /surf-research-skill <pergunta|URL|tópico> Triggers: "search the web", "find
+  /surf-research-agent-skill <pergunta|URL|tópico> Triggers: "search the web", "find
   articles about", "fetch this page", "extract from URL", "crawl the docs",
   "research X", "investigate", "compare X vs Y", "deep dive", "find everything
   about", "busca na web", "pesquise", "investigue", "compare X e Y", "pesquisa
   profunda", "ache tudo sobre", "levantamento completo". Do NOT use for local
-  files, git, code editing, or writing an execution plan (see surf-plan-skill).
+  files, git, code editing, or writing an execution plan (see surf-plan-agent-skill).
 license: MIT
 argument-hint: "<pergunta, URL ou tópico para pesquisar>"
 allowed-tools: Bash(surf-search-normal:*), Bash(surf-search-unlimit:*), Bash(surf-research-skill:*), Bash(surf:*), Read, Write, Grep, Glob, WebSearch, WebFetch, Agent, Skill, Task
@@ -22,10 +22,10 @@ model: inherit
 effort: xhigh
 metadata:
   version: "6.0.0"
-  requires: "node>=18; install via `npm i -g surf-skill`; search keys via `surf` or `surf-research-skill setup`; the surf-ai LLM key via `surf-research-skill ai-setup` (or an exported OPENROUTER_API_KEY); per-project bash timeout via `surf-research-skill project-config`"
+  requires: "node>=18; install via `npm i -g surf-agent-skill`; search keys via `surf` or `surf-research-skill setup`; the surf-ai LLM key via `surf-research-skill ai-setup` (or an exported OPENROUTER_API_KEY); per-project bash timeout via `surf-research-skill project-config`"
 ---
 
-<orchestrator xmlns="urn:surf-research-skill:v6">
+<orchestrator xmlns="urn:surf-research-agent-skill:v6">
 
   <identity>
     <role>ORQUESTRADOR DE PESQUISA</role>

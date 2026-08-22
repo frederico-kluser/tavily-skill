@@ -53,7 +53,7 @@ async function doFetch(query, ctx) {
   url.searchParams.set('format', 'json');
   url.searchParams.set('no_html', '1');
   url.searchParams.set('no_redirect', '1');
-  url.searchParams.set('t', 'surf-skill'); // app identifier (DDG etiquette)
+  url.searchParams.set('t', 'surf-agent-skill'); // app identifier (DDG etiquette)
   const timeout = ctx.timeout || DEFAULT_TIMEOUT;
   const ctl = new AbortController();
   const t = setTimeout(() => ctl.abort('timeout'), timeout);
@@ -61,7 +61,7 @@ async function doFetch(query, ctx) {
   try {
     const res = await fetch(url, {
       method: 'GET',
-      headers: { 'Accept': 'application/json', 'X-Client-Name': `surf-skill/${ctx.version || '5.4.0'}` },
+      headers: { 'Accept': 'application/json', 'X-Client-Name': `surf-agent-skill/${ctx.version || '5.4.0'}` },
       signal: ctl.signal,
     });
     clearTimeout(t);
