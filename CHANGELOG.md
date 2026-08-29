@@ -2,6 +2,26 @@
 
 > **Historical entries (v1.0.0 – v4.1.0)** have been archived to [CHANGELOG-archive.md](CHANGELOG-archive.md).
 
+## 8.0.1 — `keys list --json` no longer prints raw API keys
+
+**Security fix.** `surf-research-skill keys list --json` dumped every stored key
+in plaintext. The human-readable listing has always masked them; the JSON form
+silently did not.
+
+That asymmetry matters more here than in a normal CLI: this package exists to be
+driven by AI agents, and agent stdout lands in transcripts, handoff files and
+task plans that then get read back, committed, or pasted into a chat. One
+`keys list --json` in a logged command was a complete key exfiltration path, and
+nothing in the output warned you.
+
+`--json` now masks (`BSAlm…ulEo`) and adds `key_count`. The burn, cooldown and
+validation fields are unchanged, so `check-surf-skill.mjs` and anything else
+reading the state shape keeps working. Pass `--unsafe-show-keys` to opt back in
+to raw values — the flag is deliberately named to be uncomfortable in a script.
+
+Found while auditing a downstream skill that was about to call this command and
+write its output to disk.
+
 ## 8.0.0 — Brave only, and it says so when it cannot
 
 **Breaking.** surf now searches with Brave and nothing else. If it cannot

@@ -104,6 +104,10 @@ Commands:
   cache-clear                 Purge response cache
   cost [--reset]              Local request ledger
   keys <add|remove|list|reset|clear> [...]
+                              'keys list --json' MASKS every key. Pass
+                              --unsafe-show-keys only if a script genuinely
+                              needs the raw value — agent stdout ends up in
+                              transcripts and handoff files.
 
 Search flags (all of these now actually reach Brave — several used to be
 accepted and silently discarded):

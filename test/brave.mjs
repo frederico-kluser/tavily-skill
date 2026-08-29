@@ -391,6 +391,38 @@ section('state: the validation cache must survive a save');
 
 // ------------------------------------------------------------- providers ---
 
+section('keys list --json must not leak raw keys');
+{
+  // This package exists to be driven by AI agents, whose stdout lands in
+  // transcripts, handoff files and task plans. The human-readable listing
+  // always masked; the JSON form did not, which made `keys list --json` a
+  // one-command key exfiltration path for anything that logs its own output.
+  const { keysList } = await import('../src/lib/keys-cmd.mjs');
+  const { loadState: ls, saveStateAtomic: save } = await import('../src/lib/state.mjs');
+  const st = await ls();
+  st.brave.keys = ['BSA-super-secret-key-value-0001', 'BSA-super-secret-key-value-0002'];
+  await save(st);
+
+  const masked = await keysList([], { json: true });
+  const raw = JSON.stringify(masked.state);
+  ok('the raw key never appears in --json output', !raw.includes('super-secret-key-value'));
+  ok('keys are masked, not removed', masked.state.brave.keys[0].includes('…'));
+  eq('both keys are still listed', masked.state.brave.keys.length, 2);
+  eq('key_count is reported', masked.state.brave.key_count, 2);
+  // check-surf-skill.mjs counts state.brave.keys.length off this output.
+  ok('the shape consumers depend on survives',
+    Array.isArray(masked.state.brave.burned) && Array.isArray(masked.state.brave.validated));
+
+  const unsafe = await keysList([], { json: true, 'unsafe-show-keys': true });
+  ok('--unsafe-show-keys opts back in', JSON.stringify(unsafe.state).includes('super-secret-key-value'));
+
+  const human = await keysList([], {});
+  ok('the human listing still masks too', !human.text.includes('super-secret-key-value'));
+
+  st.brave.keys = [];
+  await save(st);
+}
+
 section('providers: there is exactly one search backend');
 const providers = await import('../src/lib/providers/index.mjs');
 eq('one provider registered', Object.keys(providers.PROVIDERS).join(','), 'brave');

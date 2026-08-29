@@ -20,6 +20,7 @@ const BOOLEAN_FLAGS = new Set([
   'no-cache', 'no-fallback', 'no-budget',
   'confirm-expensive', 'skip-validate',
   'yes', 'all', 'stdin', 'reset',
+  'unsafe-show-keys',
 ]);
 
 // Flags that ALWAYS take a value. A valued flag whose next token is missing or

@@ -113,9 +113,33 @@ export async function keysRemove(pos, flags) {
   return { provider, removed: true, index: idx, state };
 }
 
+/**
+ * Deep-copy the state with every key masked.
+ *
+ * `keys list --json` used to print raw keys. That is a real leak vector for
+ * THIS package specifically: it exists to be driven by AI agents, whose stdout
+ * lands in transcripts, handoff files and task plans that are then read back,
+ * committed, or pasted. The human-readable form has always masked; the JSON
+ * form silently did not.
+ */
+function maskState(state) {
+  const out = { schema_version: state.schema_version, last_ok_provider: state.last_ok_provider };
+  for (const p of PROVIDERS) {
+    const pp = state[p] || {};
+    out[p] = {
+      ...pp,
+      keys: (pp.keys || []).map(maskKey),
+      key_count: (pp.keys || []).length,
+    };
+  }
+  return out;
+}
+
 export async function keysList(_pos, flags) {
   const state = await loadState();
-  if (flags.json) return { json: true, state };
+  // Opt in explicitly to get raw keys — and only when stdout is not a terminal
+  // someone is screen-sharing. The flag name is deliberately unpleasant.
+  if (flags.json) return { json: true, state: flags['unsafe-show-keys'] ? state : maskState(state) };
   const lines = [];
   lines.push(`**Surf keys** (config: \`${KEYS_FILE}\`)`);
   lines.push(`last_ok_provider: \`${state.last_ok_provider || 'none'}\`\n`);

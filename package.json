@@ -1,6 +1,6 @@
 {
 "name": "surf-agent-skill",
-  "version": "8.0.0",
+  "version": "8.0.1",
   "description": "Autonomous web research for AI coding agents, on Brave Search and nothing else. The CLI runs the whole loop: an LLM (DeepSeek v4 Pro via OpenRouter) plans the queries, up to --sub-agents of them run at once against Brave — paced to your plan's real rate limit — and follow-ups enter a priority frontier as tree nodes that know their parent and depth, so later waves descend into the thin branches instead of re-searching wide. Two modes: surf-search-normal (one wave, fitted inside the agent's bash timeout) and surf-search-unlimit (as many waves as the question needs). No valid Brave key means exit 78 before anything runs — it never quietly answers from somewhere else. Also ships surf-plan-agent-skill (research-driven execution planning), `surf` interactive setup with free live key validation, and a Node library.",
   "type": "module",
   "main": "./src/index.mjs",
