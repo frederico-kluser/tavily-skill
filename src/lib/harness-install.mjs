@@ -33,9 +33,14 @@ export const HARNESS_DIRS = [
 //   surf-search-skill  — pre-v5 search-skill name (renamed to surf-research-skill)
 //   surf-parallel-skill  — v4.2 parallel-fan-out skill (folded into surf-research-skill in v5)
 //   surf-deep-plan-skill — v4.2 ambiguity-sweep skill (folded into surf-plan-skill in v5)
+//   surf-free-agent-skill — v7 keyless Wikipedia/DuckDuckGo skill, DELETED in v8.
+//     Listed here so upgrading actually removes the stale symlink from all four
+//     harness dirs. Leaving it behind would keep advertising a keyless search
+//     path whose binary no longer exists.
 const LEGACY_NAMES = [
   'tavily', 'tvly', 'surf', 'surf-skill', 'surf-plan',
   'surf-search-skill', 'surf-parallel-skill', 'surf-deep-plan-skill',
+  'surf-free-agent-skill',
 ];
 
 export async function symlinkOrCopy(target, link) {
@@ -104,7 +109,6 @@ export async function unlinkIfOurs(link, expectedTarget) {
 const SKILLS = [
   { name: 'surf-research-agent-skill', subdir: null },                            // root of package
   { name: 'surf-plan-agent-skill',     subdir: 'skills/surf-plan-agent-skill' },
-  { name: 'surf-free-agent-skill',     subdir: 'skills/surf-free-agent-skill' },  // free, keyless search
 ];
 
 export async function installSkill(pkgRoot) {

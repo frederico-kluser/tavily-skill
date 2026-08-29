@@ -1,19 +1,27 @@
-// Central dispatch: provider+key fallback for every operation. The CLI never
-// talks to provider adapters directly — it always goes through dispatch().
+// Central dispatch: key rotation, retries, caching and the Brave key gate.
+// The CLI never talks to the provider adapter directly — it always goes
+// through dispatch().
+//
+// v8 removed the provider fallback chain, because there is only one search
+// provider. What remains is KEY rotation: several Brave keys widen the
+// per-second rate budget (each key carries its own) and cover for one going
+// bad. What also disappeared is the keyless tier — a research run that cannot
+// reach Brave now fails loudly instead of quietly answering from Wikipedia.
 
 import {
   loadState, saveStateAtomic, markBurned, providerHasUsableKey,
-  nextUsableKeyIndex, setCooldown, cooldownActive, PROVIDERS as PROVIDER_NAMES,
+  setCooldown, cooldownActive, explainUnusable,
 } from './state.mjs';
 import { audit, recordUsage } from './audit.mjs';
 import { cacheKey, cacheGet, cacheSet } from './cache.mjs';
-import { getProvider, capabilityMap, providerFromRequestId, KEYLESS_PROVIDERS } from './providers/index.mjs';
+import { getProvider, capabilityMap, SEARCH_PROVIDER } from './providers/index.mjs';
+import { assertSearchReady } from './preflight.mjs';
 import { guardExpensive } from './cost.mjs';
 import { sleep } from './flags.mjs';
 import { progress } from './progress.mjs';
 
-const CACHEABLE = new Set(['search', 'extract', 'map']);
-const VERSION = '7.0.0';
+const CACHEABLE = new Set(['search']);
+const VERSION = '8.0.0';
 // After a key exhausts its 429 retries, sideline it for this long (persisted)
 // so we stop hammering a rate-limited key now and on the next process run.
 const RATE_LIMIT_COOLDOWN_MS = Number(process.env.SURF_RATE_LIMIT_COOLDOWN_MS) || 60_000;
@@ -25,11 +33,6 @@ const RATE_LIMIT_COOLDOWN_MS = Number(process.env.SURF_RATE_LIMIT_COOLDOWN_MS) |
 // entirely (no-limit harnesses like Pi Coding Agent core, which applies NO
 // default bash timeout).
 export function detectHarnessBudgetMs(flags = {}) {
-  // Explicit "no limit": --no-budget flag, SURF_NO_TIMEOUT=1, or
-  // SURF_AGENT_BUDGET_MS=0. Disables the self-budget abort below and lets each
-  // request fall back to the provider's own per-request ceiling
-  // (SURF_TIMEOUT_MS || 45s). Use only when the harness will NOT kill long
-  // calls — otherwise the call dies silently to SIGTERM.
   if (flags['no-budget'] || flags.noBudget || process.env.SURF_NO_TIMEOUT === '1') return Infinity;
   if (process.env.SURF_AGENT_BUDGET_MS) {
     const n = Number(process.env.SURF_AGENT_BUDGET_MS);
@@ -74,84 +77,34 @@ export class DispatchError extends Error {
 }
 
 function buildChain(operation, state, flags) {
-  if (operation === 'research-poll') {
-    const decoded = providerFromRequestId(flags.__requestId);
-    if (!decoded) throw new DispatchError('BAD_REQUEST_ID', `unknown request_id prefix in '${flags.__requestId}'`);
-    if (!providerHasUsableKey(state, decoded.provider)) {
-      throw new DispatchError(
-        'NoUsableKeyForRequestId',
-        `request_id belongs to provider '${decoded.provider}', which has no usable keys; run "surf-research-skill keys add --provider ${decoded.provider} <key>" and retry`
-      );
-    }
-    return { chain: [decoded.provider], pinned: true, decoded };
-  }
-
-  if (operation === 'usage') {
-    const provider = flags.provider;
-    if (!provider) throw new DispatchError('UsageNeedsProvider', `'usage' requires --provider tavily|parallel`);
-    if (!providerHasUsableKey(state, provider)) {
-      throw new DispatchError('NoUsableKey', `provider '${provider}' has no usable keys`);
-    }
-    return { chain: [provider], pinned: true };
-  }
-
-  // Keyless path: the standalone surf-free-skill sets flags.keyless to run a
-  // free, no-API-key search over wikipedia → ddg. It never touches keyed
-  // providers or keys.json, and is the ONLY way keyless providers are reached
-  // (they are not in any capabilityMap chain).
-  if (flags.keyless) {
-    if (operation !== 'search') {
-      throw new DispatchError('KeylessSearchOnly', `keyless mode only supports 'search' (got '${operation}')`);
-    }
-    const kc = [...KEYLESS_PROVIDERS];
-    if (flags.provider) {
-      if (!KEYLESS_PROVIDERS.has(flags.provider)) {
-        throw new DispatchError('NotKeyless', `--provider '${flags.provider}' is not keyless (use: ${kc.join(', ')})`);
-      }
-      return { chain: [flags.provider], pinned: true };
-    }
-    return { chain: kc, pinned: false };
-  }
-
   const baseChain = capabilityMap[operation];
   if (!Array.isArray(baseChain)) {
-    throw new DispatchError('UnknownOperation', `operation '${operation}' is not registered`);
-  }
-
-  // Keyless providers (wikipedia/ddg) always survive the filter — they need no key,
-  // so a `search` chain is never empty and NoProviderAvailable can't fire for it.
-  // Keyed providers must still have a usable (non-burned) key.
-  let chain = baseChain.filter(p => KEYLESS_PROVIDERS.has(p) || providerHasUsableKey(state, p));
-
-  if (flags.provider) {
-    if (!baseChain.includes(flags.provider)) {
-      throw new DispatchError('NotCapable',
-        `provider '${flags.provider}' does not support '${operation}' (supported: ${baseChain.join(', ')})`);
-    }
-    // Keyless providers (wikipedia/ddg) can be pinned without a key.
-    if (!KEYLESS_PROVIDERS.has(flags.provider) && !providerHasUsableKey(state, flags.provider)) {
-      throw new DispatchError('NoUsableKey', `provider '${flags.provider}' has no usable keys for '${operation}'`);
-    }
-    return { chain: [flags.provider], pinned: true };
-  }
-
-  if (chain.length === 0) {
     throw new DispatchError(
-      'NoProviderAvailable',
-      `operation '${operation}' requires one of [${baseChain.join(', ')}]; run "surf-research-skill keys add --provider <name> <key>"`
+      'UnknownOperation',
+      `operation '${operation}' does not exist in surf v8. Brave Search is a SERP: ` +
+      `it serves 'search' only. extract, crawl, map, research and usage were removed — ` +
+      `they had no Brave equivalent.`,
     );
   }
 
-  // Promote last_ok_provider to the front when it is still in the filtered chain.
-  if (state.last_ok_provider && chain.includes(state.last_ok_provider)) {
-    chain = [state.last_ok_provider, ...chain.filter(x => x !== state.last_ok_provider)];
+  if (flags.provider && flags.provider !== SEARCH_PROVIDER) {
+    throw new DispatchError(
+      'UnknownProvider',
+      `--provider '${flags.provider}' does not exist in surf v8. The only search provider is '${SEARCH_PROVIDER}'.`,
+    );
   }
 
-  if (flags['no-fallback'] || flags.noFallback) {
-    return { chain: [chain[0]], pinned: true };
+  const chain = baseChain.filter(p => providerHasUsableKey(state, p));
+  if (chain.length === 0) {
+    const why = explainUnusable(state, baseChain[0]);
+    throw new DispatchError(
+      'NoProviderAvailable',
+      `operation '${operation}' needs a usable ${baseChain[0]} key: ${why ? why.reason : 'none configured'}. ` +
+      `${why ? why.fix : ''}`,
+      { provider: baseChain[0], why },
+    );
   }
-
-  return { chain, pinned: false };
+  return { chain, pinned: chain.length === 1 };
 }
 
 function backoff(attempt) {
@@ -163,6 +116,17 @@ function backoff(attempt) {
   return Math.round(capped / 2 + Math.random() * (capped / 2));
 }
 
+/** Warn once when a caller passed an argument this provider cannot honour. */
+function warnUnsupportedArgs(provider, args) {
+  if (!provider.supportedArgs) return;
+  const ignored = Object.keys(args || {})
+    .filter(k => args[k] !== undefined && args[k] !== null && args[k] !== '')
+    .filter(k => !provider.supportedArgs.has(k));
+  if (ignored.length) {
+    progress.warn(`${provider.name}: ignoring unsupported argument(s): ${ignored.join(', ')}`);
+  }
+}
+
 export async function dispatch(operation, args, flags = {}, runCtx = {}) {
   const startTs = Date.now();
   const harnessBudget = detectHarnessBudgetMs(flags);
@@ -172,16 +136,18 @@ export async function dispatch(operation, args, flags = {}, runCtx = {}) {
   const cushion = unlimited ? 0 : Math.min(2000, Math.floor(harnessBudget * 0.1));
 
   // Library mode: caller can pass an in-memory state object to avoid touching
-  // ~/.config/surf/keys.json. State mutations (last_ok_provider, burned) stay
+  // ~/.config/surf/keys.json. State mutations (burned, cooldowns) stay
   // in-memory and don't get persisted when runCtx.state._inMemory is true.
   const state = runCtx.state || await loadState();
   const persistState = !state._inMemory;
   let cachedHit = null;
   let cKey = null;
 
-  // Cache lookup (only for cacheable, only when not forced/raw/no-cache).
-  if (CACHEABLE.has(operation) && !flags['no-cache'] && !flags['raw-json'] && !flags.provider) {
-    cKey = cacheKey('any', operation, args);
+  // Cache lookup. Deliberately BEFORE the key gate: a cache hit needs no key,
+  // costs no credit and touches no network, so refusing to serve it would be a
+  // regression rather than a safety win.
+  if (CACHEABLE.has(operation) && !flags['no-cache'] && !flags['raw-json']) {
+    cKey = cacheKey('brave', operation, args);
     cachedHit = await cacheGet(cKey);
     if (cachedHit) {
       await audit({ op: operation, cache: 'hit', provider: cachedHit.provider });
@@ -191,13 +157,13 @@ export async function dispatch(operation, args, flags = {}, runCtx = {}) {
     }
   }
 
-  const { chain, pinned, decoded } = buildChain(operation, state, flags);
+  const { chain, pinned } = buildChain(operation, state, flags);
 
-  // Cost guard runs AFTER chain build, so NoProviderAvailable and
-  // bad-input errors surface before users see a misleading credit warning.
-  if (operation !== 'research-poll' && operation !== 'usage') {
-    guardExpensive(operation, args, chain, flags);
-  }
+  // THE HARD STOP. Nothing below this line runs without a Brave key we have
+  // either just validated or validated recently. The common path is offline.
+  await assertSearchReady(state, operation, { persist: persistState });
+
+  guardExpensive(operation, args, chain, flags);
 
   const errors = [];
 
@@ -207,46 +173,36 @@ export async function dispatch(operation, args, flags = {}, runCtx = {}) {
       errors.push(`${providerName}: provider not registered`);
       continue;
     }
-    if (operation !== 'research-poll' && !provider.supports[operation]) {
+    if (!provider.supports[operation]) {
       errors.push(`${providerName}: does not support '${operation}'`);
       continue;
     }
+    warnUnsupportedArgs(provider, args);
 
     let attempted = new Set();
     let providerExhausted = false;
-    // Keyless providers (wikipedia/ddg) have no keys / no state slot: run exactly one
-    // synthetic iteration with an undefined ctx.key.
-    const isKeyless = KEYLESS_PROVIDERS.has(providerName);
-    let keylessDone = false;
 
     while (!providerExhausted) {
-      let keyIdx;
-      if (isKeyless) {
-        if (keylessDone) { providerExhausted = true; break; }
-        keylessDone = true;
-        keyIdx = -1; // sentinel: no key
-      } else {
-        keyIdx = (() => {
-          const p = state[providerName];
-          if (!p || !p.keys.length) return -1;
-          const burnedIdx = new Set(p.burned.map(b => b.index));
-          const now = Date.now();
-          const n = p.keys.length;
-          const start = Math.max(0, Math.min(p.current || 0, n - 1));
-          for (let off = 0; off < n; off++) {
-            const i = (start + off) % n;
-            if (attempted.has(i)) continue;
-            if (burnedIdx.has(i)) continue;
-            if (cooldownActive(p, i, now)) continue; // skip rate-limited keys
-            return i;
-          }
-          return -1;
-        })();
-        if (keyIdx === -1) { providerExhausted = true; break; }
-        attempted.add(keyIdx);
-      }
+      const keyIdx = (() => {
+        const p = state[providerName];
+        if (!p || !p.keys.length) return -1;
+        const burnedIdx = new Set(p.burned.map(b => b.index));
+        const now = Date.now();
+        const n = p.keys.length;
+        const start = Math.max(0, Math.min(p.current || 0, n - 1));
+        for (let off = 0; off < n; off++) {
+          const i = (start + off) % n;
+          if (attempted.has(i)) continue;
+          if (burnedIdx.has(i)) continue;
+          if (cooldownActive(p, i, now)) continue; // skip rate-limited keys
+          return i;
+        }
+        return -1;
+      })();
+      if (keyIdx === -1) { providerExhausted = true; break; }
+      attempted.add(keyIdx);
 
-      progress.start(`${operation} → ${providerName} (${isKeyless ? 'keyless' : 'key #' + keyIdx})`);
+      progress.start(`${operation} → ${providerName} (key #${keyIdx})`);
 
       // Self-budget check: abort BEFORE the harness SIGTERMs us. Skipped
       // entirely when unlimited (--no-budget / no-limit harness like Pi).
@@ -260,15 +216,15 @@ export async function dispatch(operation, args, flags = {}, runCtx = {}) {
             `Operation '${operation}' would likely exceed the agent's bash timeout ` +
             `(~${Math.round(harnessBudget / 1000)}s detected, harness=${harnessName}). ` +
             `Run 'surf-research-skill project-config' in this project to raise the limit, ` +
-            `pass --no-budget if this harness has NO bash timeout (e.g. Pi core), ` +
-            `or use 'research-start' + 'research-poll' for long jobs.`,
+            `or pass --no-budget if this harness has NO bash timeout (e.g. Pi core). ` +
+            `Note Brave paces requests to your plan's rate limit, so a wide fan-out takes time.`,
             { harness: harnessName, budgetMs: harnessBudget, elapsedMs: elapsed },
           );
         }
       }
 
       const ctx = {
-        key: isKeyless ? undefined : state[providerName].keys[keyIdx],
+        key: state[providerName].keys[keyIdx],
         // Constrain HTTP timeout to whatever's left in our budget so we don't
         // sit waiting beyond what the harness will allow. When unlimited, pass
         // undefined so the provider uses its own per-request ceiling
@@ -280,10 +236,6 @@ export async function dispatch(operation, args, flags = {}, runCtx = {}) {
         version: VERSION,
       };
 
-      const callArgs = operation === 'research-poll' && decoded
-        ? { ...args, providerRunId: decoded.providerRunId }
-        : args;
-
       let consecutive5xx = 0;
       let consecutive429 = 0;
       let consecutiveNetwork = 0;
@@ -291,8 +243,7 @@ export async function dispatch(operation, args, flags = {}, runCtx = {}) {
 
       for (let attempt = 0; attempt < 3 && !success; attempt++) {
         try {
-          const result = await provider[operation](callArgs, ctx);
-          success = result;
+          success = await provider[operation](args, ctx);
           break;
         } catch (e) {
           const kind = e.kind || 'caller_4xx';
@@ -301,25 +252,30 @@ export async function dispatch(operation, args, flags = {}, runCtx = {}) {
             kind, status: e.statusCode, message: (e.message || '').slice(0, 200),
           });
 
-          if (kind === 'caller_4xx' || kind === 'not_supported') {
-            // Keyed provider + bad input: don't retry or fallback. But a KEYLESS
-            // fallback that 4xxs (e.g. a bad optional env key or an upstream
-            // block) must NOT abort the chain — fall through to the next provider.
-            if (isKeyless) break;
-            throw e;
-          }
+          // The caller's fault, not the key's. Do NOT retry, do NOT burn.
+          // This branch is what stops a typo in --country from permanently
+          // destroying every key in the ring: Brave answers a bad parameter
+          // with 422, the same status as an invalid token, and the previous
+          // version could not tell them apart.
+          if (kind === 'caller_4xx' || kind === 'config_4xx' || kind === 'not_supported') throw e;
+
+          // The PLAN lacks a feature. The key is fine and another key on the
+          // same account would fail identically, so rotating is pointless.
+          if (kind === 'plan_gate') throw e;
+
           if (kind === 'rate_limit_429') {
             consecutive429++;
             if (attempt < 2) {
-              progress.retry(`${providerName} 429 — backoff ${backoff(attempt)}ms (attempt ${attempt + 1}/3)`);
-              await sleep(backoff(attempt)); continue;
+              // Brave sends no Retry-After; the adapter derives the wait from
+              // x-ratelimit-reset and hands it over as retryAfterMs.
+              const wait = e.retryAfterMs || backoff(attempt);
+              progress.retry(`${providerName} 429 — backoff ${wait}ms (attempt ${attempt + 1}/3)`);
+              await sleep(wait); continue;
             }
             // Exhausted 429 retries: sideline this key on a short, persisted
             // cooldown so we skip it now and next run instead of hammering it.
-            if (!isKeyless) {
-              setCooldown(state, providerName, keyIdx, Date.now() + RATE_LIMIT_COOLDOWN_MS);
-              if (persistState) await saveStateAtomic(state);
-            }
+            setCooldown(state, providerName, keyIdx, Date.now() + RATE_LIMIT_COOLDOWN_MS);
+            if (persistState) await saveStateAtomic(state);
             break; // -> next key
           }
           if (kind === 'network') {
@@ -331,21 +287,17 @@ export async function dispatch(operation, args, flags = {}, runCtx = {}) {
             break; // exhausted retries -> next key
           }
           if (kind === 'auth') {
-            if (!isKeyless) {
-              progress.warn(`${providerName} key #${keyIdx} burned (${e.statusCode || 'auth'})`);
-              markBurned(state, providerName, keyIdx, String(e.statusCode || 'auth'));
-              if (persistState) await saveStateAtomic(state);
-            }
+            progress.warn(`${providerName} key #${keyIdx} burned (${e.statusCode || 'auth'})`);
+            markBurned(state, providerName, keyIdx, String(e.statusCode || 'auth'));
+            if (persistState) await saveStateAtomic(state);
             break; // next key
           }
           if (kind === 'server_5xx') {
             consecutive5xx++;
             if (consecutive5xx >= 3) {
-              if (!isKeyless) {
-                progress.warn(`${providerName} key #${keyIdx} burned (5xx x3)`);
-                markBurned(state, providerName, keyIdx, '5xx');
-                if (persistState) await saveStateAtomic(state);
-              }
+              progress.warn(`${providerName} key #${keyIdx} sidelined (5xx x3)`);
+              setCooldown(state, providerName, keyIdx, Date.now() + RATE_LIMIT_COOLDOWN_MS);
+              if (persistState) await saveStateAtomic(state);
               break; // next key
             }
             if (attempt < 2) {
@@ -360,18 +312,13 @@ export async function dispatch(operation, args, flags = {}, runCtx = {}) {
       }
 
       if (success) {
-        // Keyless providers never write state: no key to remember, and we must
-        // NOT set last_ok_provider (that would promote the free tier ahead of the
-        // user's paid providers on the next request).
-        if (!isKeyless) {
-          state.last_ok_provider = providerName;
-          state[providerName].current = keyIdx;
-          if (persistState) await saveStateAtomic(state);
-        }
+        state.last_ok_provider = providerName;
+        state[providerName].current = keyIdx;
+        if (persistState) await saveStateAtomic(state);
         await recordUsage({
           op: operation,
           provider: providerName,
-          key_index: isKeyless ? undefined : keyIdx,
+          key_index: keyIdx,
           credits: success.usage && success.usage.credits,
           cached: false,
           latency_ms: success.latency_ms,
@@ -387,16 +334,17 @@ export async function dispatch(operation, args, flags = {}, runCtx = {}) {
         return success;
       }
 
-      // No success on this key; record summary and loop to next key.
-      errors.push(`${providerName}${isKeyless ? '' : '#' + keyIdx}: ${consecutive5xx ? '5xx' : consecutive429 ? '429' : consecutiveNetwork ? 'network' : 'auth'}`);
+      errors.push(`${providerName}#${keyIdx}: ${consecutive5xx ? '5xx' : consecutive429 ? '429' : consecutiveNetwork ? 'network' : 'auth'}`);
     }
 
     if (pinned) break;
   }
 
+  const why = explainUnusable(state, chain[0]);
   throw new DispatchError(
-    'AllProvidersExhausted',
-    `operation '${operation}' failed on every provider/key${errors.length ? ': ' + errors.join('; ') : ''}`,
-    { errors },
+    'AllKeysExhausted',
+    `'${operation}' failed on every ${chain[0]} key${errors.length ? ': ' + errors.join('; ') : ''}.` +
+    (why ? ` ${why.reason} — ${why.fix}` : ''),
+    { errors, why },
   );
 }

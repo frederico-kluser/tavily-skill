@@ -5,8 +5,10 @@
 //   1. Verifies both skills are installed (symlinks present)
 //   2. Lists currently-configured keys per provider
 //   3. Offers an interactive menu: add / list / remove / doctor / quit
-//   4. EVERY key added is validated LIVE against the provider's API
-//      before being saved (1-credit cost, ~1-3s per validation)
+//   4. EVERY key added is validated LIVE against the provider's API before
+//      being saved. Both validations are FREE: Brave rejects a q-less request
+//      before billing it, and OpenRouter exposes free key introspection. The
+//      verdict is cached in keys.json so the preflight gate stays offline.
 //
 // This is the friendliest entry point. `surf-research-skill` and `surf-plan-skill`
 // remain available for power users and scripts.
@@ -17,20 +19,22 @@ import { existsSync, promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { loadState, saveStateAtomic, KEYS_FILE, PROVIDERS, SEARCH_PROVIDERS } from '../src/lib/state.mjs';
+import { loadState, saveStateAtomic, setValidation, KEYS_FILE, PROVIDERS, SEARCH_PROVIDERS } from '../src/lib/state.mjs';
 import { validateKey, formatValidation } from '../src/validators/index.mjs';
 import { HARNESS_DIRS } from '../src/lib/harness-install.mjs';
-import { KEYLESS_PROVIDERS } from '../src/lib/providers/index.mjs';
+import { gateStatus, resolveGate, GATE, formatGate, EXIT_CONFIG } from '../src/lib/preflight.mjs';
 import { runAiSetup } from '../src/lib/ai/setup.mjs';
 import { keysFromEnv, PRIMARY_MODEL } from '../src/lib/ai/openrouter.mjs';
 
-const VERSION = '7.0.0';
+const VERSION = '8.0.0';
 
 const HELP = `surf — multi-skill setup & validation
 
-Bundles surf-research-skill (multi-provider web search + the surf-ai autonomous
-research loop), surf-plan-skill (research-driven execution planning), and
-surf-free-skill (free, keyless web search — no API key) into one command.
+Bundles surf-research-skill (Brave web search + the surf-ai autonomous research
+loop) and surf-plan-skill (research-driven execution planning) into one command.
+
+surf v8 searches with Brave and nothing else. No valid Brave key means every
+research command stops with exit 78 — it never answers from somewhere else.
 
 Commands:
   (no args)              Interactive setup wizard (add keys with live validation)
@@ -44,20 +48,21 @@ Commands:
   --version, -v          Show version
 
 Power-user CLIs (also installed):
-  surf-search-normal ... surf-ai, ONE round (fits the agent's bash timeout)
-  surf-search-unlimit ...surf-ai, as many rounds as the question needs
-  surf-research-skill ...The search engine (search/extract/crawl/map/research)
+  surf-search-normal ... surf-ai, ONE wave (fits the agent's bash timeout)
+  surf-search-unlimit ...surf-ai, as many waves as the question needs
+  surf-research-skill ...The search engine (search / search-parallel)
   surf-plan-skill ...    The planning skill (list/show/new/doctor)
-  surf-free-skill ...    Free keyless search (Wikipedia + DuckDuckGo, no key)
 
 Providers:
-  tavily · parallel · brave   web search (surf-ai fans out across these)
-  openrouter                  the LLM surf-ai plans + synthesizes with
-                              (default model: ${PRIMARY_MODEL})
+  brave        the ONE search backend. Required. Each key carries its own
+               per-second rate budget, so a second key doubles the fan-out.
+  openrouter   the LLM surf-ai plans + synthesizes with — NOT a search
+               provider (default model: ${PRIMARY_MODEL})
 
 Keys live in:        ${KEYS_FILE} (chmod 600)
 Plans live in:       ~/.claude/plans/<slug>-<timestamp>.md (or ./plans/)
 SKILL.md (search):   ~/.agents/skills/surf-research-agent-skill/SKILL.md
+Brave API notes:     references/brave-api.md
 SKILL.md (planning): ~/.agents/skills/surf-plan-agent-skill/SKILL.md
 `;
 
@@ -79,7 +84,7 @@ function fmtBytes(n) {
 
 async function detectSkills() {
   const home = os.homedir();
-  const skillsToCheck = ['surf-research-agent-skill', 'surf-plan-agent-skill', 'surf-free-agent-skill'];
+  const skillsToCheck = ['surf-research-agent-skill', 'surf-plan-agent-skill'];
   const found = {};
   for (const skill of skillsToCheck) {
     found[skill] = { dirs: [] };
@@ -183,7 +188,7 @@ async function cmdAdd(rl) {
       return;
     }
 
-    out(`  validating against ${provider} API (1 credit, ~2s)…`);
+    out(`  validating against the ${provider} API (free — no credits, no quota)…`);
     const r = await validateKey(provider, key);
     out(`  ${formatValidation(r)}`);
     if (!r.valid) {
@@ -194,6 +199,8 @@ async function cmdAdd(rl) {
 
     ps.keys.push(key);
     if (ps.keys.length === 1) ps.current = 0;
+    await saveStateAtomic(state);
+    setValidation(state, provider, ps.keys.length - 1, { ok: true, status: r.statusCode });
     await saveStateAtomic(state);
     out(`✓ saved as ${provider} key #${ps.keys.length - 1}. Total ${provider}: ${ps.keys.length}.`);
   } finally {
@@ -221,10 +228,22 @@ async function cmdDoctor() {
   const totals = PROVIDERS.map(p => ({ p, n: state[p].keys.length, burned: state[p].burned.length }));
   for (const t of totals) {
     const status = t.n === 0 ? '⚠ no keys' : t.burned ? `${t.n} key(s), ${t.burned} burned` : `${t.n} key(s) ✓`;
-    const note = t.p === 'openrouter' ? '   (surf-ai LLM)' : '';
+    const note = t.p === 'openrouter' ? '   (surf-ai LLM, not a search provider)' : '   (the search backend)';
     out(`  ${t.p.padEnd(10)} ${status}${note}`);
   }
-  out(`  ${'free'.padEnd(10)} surf-free-skill — keyless search (${[...KEYLESS_PROVIDERS].join(' + ')}), no key needed`);
+
+  // A count is not a verdict. The previous doctor happily reported
+  // "brave 1 key(s), 1 burned" and exited 0 — the exact state in which every
+  // research command fails. Ask the gate instead.
+  out('\n## Brave key gate (this is what every command checks)');
+  const verdict = await resolveGate(state, 'brave', { persist: true });
+  if (verdict.verdict === GATE.READY) {
+    out(`  ✓ ready — key #${verdict.index} (${verdict.detail})`);
+  } else {
+    const { text } = formatGate(verdict.verdict, verdict.detail, 'brave');
+    for (const line of text.split('\n')) out(`  ${line}`);
+    process.exitCode = EXIT_CONFIG;
+  }
 
   out('\n## surf-ai');
   const envOr = keysFromEnv();
@@ -234,19 +253,11 @@ async function cmdDoctor() {
         (envOr.length ? ` + ${envOr.length} from OPENROUTER_API_KEY(S)` : ''));
     out(`    default model: ${PRIMARY_MODEL}`);
     out('    surf-search-normal "question" --task … --goal … --insights …');
-    out('    surf-search-unlimit "question" --max-rounds 6');
+    out('    surf-search-unlimit "question" --sub-agents=10 --max-depth 3');
   } else {
     out('  ⚠ no OpenRouter key — surf-ai will fall back to its deterministic,');
     out('    LLM-free path (real searches, no synthesis). Turn it on with:');
     out('      surf ai-key            (or: surf-research-skill ai-setup)');
-  }
-
-  const searchTotals = totals.filter(t => SEARCH_PROVIDERS.includes(t.p));
-  if (searchTotals.every(t => t.n === 0)) {
-    out('\n  ⚠ No search keys — surf-research-skill needs one. Run `surf` to add Tavily/Parallel/Brave keys.');
-    out('  ℹ surf-ai still runs: it drops to the keyless tier. For a plain free lookup,');
-    out('    use `surf-free-skill "your query"`.');
-    process.exitCode = 2;
   }
 
   out('\n## Plans');
@@ -280,7 +291,7 @@ async function interactiveMenu() {
   try {
     while (true) {
       out('What do you want to do?');
-      out('  [1] Add a search key (tavily / parallel / brave, live-validated)');
+      out('  [1] Add a Brave search key (live-validated, free)');
       out('  [2] Add the OpenRouter key that powers surf-ai');
       out('  [3] List + revalidate all keys');
       out('  [4] Remove a key');

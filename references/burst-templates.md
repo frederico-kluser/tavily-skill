@@ -214,23 +214,32 @@ Close {{DOUBT_ID}} with citable evidence, in the output format below.
 Run the surf-ai CLI. Pick ONE:
 
 ```bash
-# Default — 1 round, 45–110 s:
+# Default — 1 wave, 45–110 s:
 surf-search-normal "{{DOUBT_TEXT}}" \
   --task "{{TASK_CONTEXT}}" \
   --goal "{{GOAL}}" \
   --insights "{{ASSUMPTIONS_TO_FALSIFY}}" \
   --deliverable "{{DELIVERABLE}}" \
+  --sub-agents={{SUB_AGENTS_EACH}} \
   --json --out {{HANDOFF_DIR}}/{{DOUBT_ID}}.json
 
 # Only if the doubt is genuinely open-ended OR the global mode is continuous-burst:
 surf-search-unlimit "{{DOUBT_TEXT}}" \
   --task "{{TASK_CONTEXT}}" --goal "{{GOAL}}" \
   --insights "{{ASSUMPTIONS_TO_FALSIFY}}" --deliverable "{{DELIVERABLE}}" \
-  --max-rounds {{MAX_ROUNDS}} \
+  --max-rounds {{MAX_ROUNDS}} --max-depth 3 \
+  --sub-agents={{SUB_AGENTS_EACH}} \
   --json --out {{HANDOFF_DIR}}/{{DOUBT_ID}}.json
 ```
 
-Bash timeout: 180000 ms for `normal`, 600000 ms for `unlimit`.
+`{{SUB_AGENTS_EACH}}` is `max(1, floor(N / <burst size>))`, where N is the
+orchestrator's `sub-agents` ceiling (default 10). The two levels ADD; without
+the flag they would MULTIPLY, and a burst of 5 would put 50 concurrent requests
+on a Brave plan that may serve one per second.
+
+Bash timeout: 180000 ms for `normal`, 600000 ms for `unlimit`. Note that surf
+paces requests to your Brave plan's rate limit, so a wide fan-out on a slow plan
+spends real wall-clock waiting — that is queueing, not a hang.
 Effort proportional: a simple fact calls for 3–10 tool calls; a comparative
 doubt, 10–15. Source diversity matters more than quantity: official docs ·
 spec/RFC · benchmark · security advisory · community discussion · primary
@@ -251,12 +260,25 @@ proven it does not exist. Do not declare success because you "found something
 relevant."
 
 ## RULES
+0. FAN-OUT BUDGET — every surf-search-* command you run MUST carry
+   `--sub-agents={{SUB_AGENTS_EACH}}`. The orchestrator divided its own ceiling
+   across this burst; without the flag you would use the default of 10 and this
+   burst would issue ten times more concurrent Brave requests than the plan can
+   serve.
 1. Do not invent. The CLI plans the queries, searches in parallel, and synthesizes.
 2. Never ask the user anything.
-3. FAILURE LADDER — this is the only one, and it is yours: if the CLI fails,
-   try a second time with `--max-queries 4`. If it fails again, use the
-   harness's WebSearch/WebFetch and declare FALLBACK in the handoff. FALLBACK
-   with a citable answer is a valid delivery, not a failure.
+3. FAILURE LADDER — this is the only one, and it is yours:
+   - **Exit 78** → STOP IMMEDIATELY. There is no valid Brave key. Return the
+     gate message verbatim as your handoff and mark the doubt BLOCKED. Do not
+     retry, do not search another way: every sibling is about to fail the same
+     way, and the orchestrator needs to hear it once, not N times.
+   - Any other failure → try once more with `--max-queries 4`. If it fails
+     again, mark the doubt BLOCKED and say why.
+   - There is NO fallback to the harness's WebSearch/WebFetch. surf v8 answers
+     from Brave or not at all: a source that did not come through the CLI has
+     no entry in the ledger, no citation number, and cannot be audited in the
+     final report. A BLOCKED doubt reported honestly is a valid delivery; a
+     smuggled source is not.
 4. Write the COMPLETE handoff to `{{HANDOFF_DIR}}/{{DOUBT_ID}}.md` (with all
    sources and excerpts) and return only the SUMMARY below. The orchestrator
    reads the summary; the synthesizer reads the file. If the summary is not
@@ -278,7 +300,8 @@ relevant."
 final answer if it is A or B — or "None"]
 **Out-of-scope findings:** [for sibling X — or "None"]
 **Full handoff:** {{HANDOFF_DIR}}/{{DOUBT_ID}}.md
-**Blockers:** [FALLBACK used / persistent error — or "None"]
+**Blockers:** [BLOCKED and why — exit 78 (no Brave key), repeated CLI failure,
+rate limit — or "None"]
 ```
 ````
 

@@ -11,9 +11,10 @@
 //   · ledger dedupe, source numbering, digest truncation
 //   · the heuristic (LLM-free) fallbacks
 //   · brief building + usage errors
-//   · the FULL orchestrator loop, twice: normal (1 round) and unlimit
-//     (2 rounds driven by the analyst), against a stubbed OpenRouter + Tavily
+//   · the FULL orchestrator loop, twice: normal (1 wave) and unlimit
+//     (2 waves driven by the analyst), against a stubbed OpenRouter + Brave
 //   · graceful degradation when every OpenRouter call fails
+//   · the hard stop: with no Brave key the run raises instead of answering
 
 import { spawnSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
@@ -32,10 +33,13 @@ if (!process.env.SURF_SMOKE_CHILD) {
     path.join(home, '.config', 'surf', 'keys.json'),
     JSON.stringify({
       schema_version: 1,
-      tavily: { keys: ['tvly-test-key-0000'], current: 0, burned: [], cooldowns: [] },
-      parallel: { keys: [], current: 0, burned: [], cooldowns: [] },
-      brave: { keys: [], current: 0, burned: [], cooldowns: [] },
-      openrouter: { keys: ['sk-or-v1-test-key-0000'], current: 0, burned: [], cooldowns: [] },
+      // Pre-validated so the preflight gate resolves offline and the suite
+      // never reaches the network.
+      brave: {
+        keys: ['brv-test-key-0000'], current: 0, burned: [], cooldowns: [],
+        validated: [{ index: 0, at: new Date().toISOString(), ok: true, status: 200, reason: null }],
+      },
+      openrouter: { keys: ['sk-or-v1-test-key-0000'], current: 0, burned: [], cooldowns: [], validated: [] },
       last_ok_provider: null,
     }, null, 2),
   );
@@ -49,8 +53,11 @@ if (!process.env.SURF_SMOKE_CHILD) {
       SURF_SMOKE_CHILD: '1',
       SURF_QUIET: '1',
       // Keep the child off any real endpoint even if a stub is missed.
-      SURF_TAVILY_API_BASE: 'https://tavily.invalid',
+      SURF_BRAVE_API_BASE: 'https://brave.invalid/res/v1',
       SURF_OPENROUTER_BASE: 'https://openrouter.invalid/api/v1',
+      // Pacing is covered in test/brave.mjs; leaving it armed here would add a
+      // real second of wall-clock per stubbed search.
+      SURF_NO_RATE_LIMIT: '1',
     },
   });
   try { rmSync(home, { recursive: true, force: true }); } catch {}
@@ -77,17 +84,21 @@ function jsonResponse(status, body) {
   return {
     ok: status >= 200 && status < 300,
     status,
+    headers: new Map(),
     text: async () => JSON.stringify(body),
   };
 }
 
-function tavilyHit(query, i) {
+// Brave's shape, not Tavily's: `description` (not `content`), `page_age` (ISO)
+// alongside `age` (display), and everything nested under `web.results`.
+function braveHit(query, i) {
   return {
     url: `https://example.com/${encodeURIComponent(query).slice(0, 20)}/${i}`,
     title: `Result ${i} for ${query}`,
-    content: `Body text for ${query} number ${i}. `.repeat(8),
-    score: 0.9 - i * 0.1,
-    published_date: '2026-07-01',
+    description: `Body text for ${query} number ${i}. `.repeat(8),
+    extra_snippets: [`Extra excerpt ${i} for ${query}.`],
+    page_age: '2026-07-01T00:00:00',
+    age: 'July 1, 2026',
   };
 }
 
@@ -95,8 +106,8 @@ function tavilyHit(query, i) {
 // the parsed request body so a test can assert on what was actually sent.
 let orScript = [];
 let orCalls = [];
-let tavilyCalls = [];
-let tavilyBehavior = () => ({ status: 200 });
+let braveCalls = [];
+let braveBehavior = () => ({ status: 200 });
 
 function installFetchStub() {
   globalThis.fetch = async (url, init = {}) => {
@@ -114,15 +125,18 @@ function installFetchStub() {
       return next(body);
     }
 
-    if (u.includes('tavily')) {
-      const body = JSON.parse(init.body);
-      tavilyCalls.push(body);
-      const b = tavilyBehavior(body, tavilyCalls.length);
-      if (b.status !== 200) return jsonResponse(b.status, b.body || { error: 'stub error' });
+    if (u.includes('brave')) {
+      // Brave is GET with query params. Tavily was POST with a JSON body, so
+      // this must PARSE THE URL, not init.body — the difference is why the old
+      // stub cannot simply be renamed.
+      const params = new URL(u).searchParams;
+      const query = params.get('q') || '';
+      braveCalls.push({ query, params });
+      const b = braveBehavior({ query, params }, braveCalls.length);
+      if (b.status !== 200) return jsonResponse(b.status, b.body || { error: { code: 'VALIDATION', detail: 'stub error' } });
       return jsonResponse(200, {
-        query: body.query,
-        results: [tavilyHit(body.query, 1), tavilyHit(body.query, 2)],
-        usage: { credits: 1 },
+        query: { original: query, more_results_available: false },
+        web: { results: [braveHit(query, 1), braveHit(query, 2)] },
       });
     }
 
@@ -145,8 +159,8 @@ const PLAN_JSON = JSON.stringify({
     { id: 'sq2', question: 'what breaks', why: 'risk' },
   ],
   queries: [
-    { id: 'q1', q: 'X official docs', sub: 'sq1', category: 'official-docs' },
-    { id: 'q2', q: 'X known issues', sub: 'sq2', category: 'community' },
+    { id: 'q1', q: 'X official docs', sub: 'sq1', category: 'official-docs', priority: 0.9 },
+    { id: 'q2', q: 'X known issues', sub: 'sq2', category: 'community', priority: 0.8 },
   ],
   success_criteria: ['a primary source confirms X'],
 });
@@ -221,7 +235,7 @@ eq('canonicalUrl strips fragment + trailing slash', canonicalUrl('https://a.com/
 
 const led = new Ledger();
 led.addSuccess(1, { id: 'q1', q: 'alpha', sub: 'sq1' }, {
-  provider: 'tavily', latency_ms: 10, usage: { credits: 1 },
+  provider: 'brave', latency_ms: 10, usage: { credits: 1 },
   data: { results: [
     { url: 'https://a.com/1', title: 'A', content: 'aaa' },
     { url: 'https://b.com/1', title: 'B', content: 'bbb' },
@@ -239,11 +253,12 @@ eq('sources deduped across queries', led.stats().sources, 2);
 ok('duplicate url reuses source number', led.rows[1].results[0].n === led.rows[0].results[0].n);
 ok('failure appears in digest', led.digest().includes('SEARCH FAILED'));
 ok('table has a row per query', led.tableMarkdown().split('\n').length === 5);
+ok('table carries depth and parent columns', led.tableMarkdown().includes('| Depth |'));
 ok('hasQuery is case/space insensitive', led.hasQuery('  ALPHA '));
 
 const bigLed = new Ledger();
 bigLed.addSuccess(1, { id: 'q1', q: 'big', sub: 'sq1' }, {
-  provider: 'tavily', latency_ms: 1, usage: {},
+  provider: 'brave', latency_ms: 1, usage: {},
   data: { results: [{ url: 'https://c.com/1', title: 'C', content: 'z'.repeat(50_000) }] },
 });
 ok('per-result truncation applies', bigLed.digest({ perResult: 200 }).length < 2_000);
@@ -303,14 +318,14 @@ installFetchStub();
 const { runSurfAi } = await import('../src/lib/ai/orchestrator.mjs');
 
 orScript = [orChat(PLAN_JSON), orChat('# Answer\nX works [1].')];
-orCalls = []; tavilyCalls = [];
+orCalls = []; braveCalls = [];
 const normal = await runSurfAi(
   { question: 'does X work', task: 'building Y', goal: 'decide', insights: 'I think yes' },
   { mode: 'normal', flags: { 'no-cache': true } },
 );
 eq('normal runs exactly 1 round', normal.rounds, 1);
 eq('normal makes exactly 2 LLM calls', orCalls.length, 2);
-eq('both planned queries ran', tavilyCalls.length, 2);
+eq('both planned queries ran', braveCalls.length, 2);
 ok('answer is the synthesized text', normal.answer.includes('X works'));
 ok('synthesized flag set', normal.synthesized === true);
 ok('no degraded stages', normal.diagnostics.degraded.length === 0);
@@ -325,20 +340,23 @@ const ANALYSIS_OPEN = JSON.stringify({
   resolved: false, confidence: 'low',
   coverage: [{ sub: 'sq1', status: 'thin', note: 'need more' }],
   open_points: ['version unclear'],
-  next_queries: [{ id: 'q3', q: 'X current version', sub: 'sq1', category: 'news' }],
+  next_queries: [{ id: 'q3', q: 'X current version number', sub: 'sq1', category: 'news', priority: 0.9, kind: 'depth', parent: 'q1' }],
+  branches_to_close: [],
+  saturation: false,
   stop_reason: 'need the version',
 });
 const ANALYSIS_DONE = JSON.stringify({
   resolved: true, confidence: 'high',
   coverage: [{ sub: 'sq1', status: 'answered', note: 'ok' }],
-  open_points: [], next_queries: [], stop_reason: 'criteria met',
+  open_points: [], next_queries: [], branches_to_close: [], saturation: false,
+  stop_reason: 'criteria met',
 });
 
 orScript = [orChat(PLAN_JSON), orChat(ANALYSIS_OPEN), orChat(ANALYSIS_DONE), orChat('# Answer\nResolved [1].')];
-orCalls = []; tavilyCalls = [];
+orCalls = []; braveCalls = [];
 const unl = await runSurfAi({ question: 'does X work' }, { mode: 'unlimit', maxRounds: 5, flags: { 'no-cache': true } });
 eq('unlimit ran 2 rounds', unl.rounds, 2);
-eq('3 searches total (2 + 1 follow-up)', tavilyCalls.length, 3);
+eq('3 searches total (2 + 1 follow-up)', braveCalls.length, 3);
 ok('stopped on the resolved verdict', /criteria met/.test(unl.stop_reason));
 ok('open points recorded', unl.analysis.resolved === true);
 
@@ -346,57 +364,91 @@ section('orchestrator: repeated queries are dropped');
 const ANALYSIS_REPEAT = JSON.stringify({
   resolved: false, confidence: 'low', coverage: [],
   open_points: ['still unclear'],
-  next_queries: [{ id: 'q9', q: 'X official docs', sub: 'sq1', category: 'official-docs' }],
+  next_queries: [{ id: 'q9', q: 'X official docs', sub: 'sq1', category: 'official-docs', priority: 0.7, kind: 'depth', parent: 'q1' }],
+  branches_to_close: [],
+  saturation: false,
   stop_reason: 'retry',
 });
 orScript = [orChat(PLAN_JSON), orChat(ANALYSIS_REPEAT), orChat('# Answer\nDone [1].')];
-orCalls = []; tavilyCalls = [];
+orCalls = []; braveCalls = [];
 const rep = await runSurfAi({ question: 'dup test' }, { mode: 'unlimit', maxRounds: 5, flags: { 'no-cache': true } });
-eq('no search re-ran', tavilyCalls.length, 2);
-ok('stop reason names the repeat', /already been run/.test(rep.stop_reason));
+eq('no search re-ran', braveCalls.length, 2);
+ok('stop reason names the repeat', /already been run/.test(rep.stop_reason), `got: ${rep.stop_reason}`);
+ok('the rejected duplicate is recorded, not silently dropped',
+  rep.frontier.rejected.some(r => /duplicate/.test(r.reason)));
 
 section('orchestrator: degrades when every LLM call fails');
 orScript = []; // stub exhausted → 503 on every call
-orCalls = []; tavilyCalls = [];
+orCalls = []; braveCalls = [];
 const degraded = await runSurfAi({ question: 'llm is down' }, { mode: 'normal', flags: { 'no-cache': true } });
 ok('still returns an answer', typeof degraded.answer === 'string' && degraded.answer.length > 0);
 ok('answer is marked degraded', degraded.answer.includes('Degraded mode'));
 ok('degraded stages recorded', degraded.diagnostics.degraded.length >= 2);
-ok('searches still ran via the heuristic plan', tavilyCalls.length > 0);
+ok('searches still ran via the heuristic plan', braveCalls.length > 0);
 ok('sources still collected', degraded.stats.sources > 0);
 
 section('orchestrator: search failures never abort the run');
 orScript = [orChat(PLAN_JSON), orChat('# Answer\nPartial [1].')];
-orCalls = []; tavilyCalls = [];
-tavilyBehavior = (_body, n) => (n === 1 ? { status: 400, body: { error: 'bad query' } } : { status: 200 });
+orCalls = []; braveCalls = [];
+braveBehavior = (_body, n) => (n === 1 ? { status: 400, body: { error: 'bad query' } } : { status: 200 });
 const partial = await runSurfAi({ question: 'partial failure' }, { mode: 'normal', flags: { 'no-cache': true } });
 eq('one query failed', partial.stats.failed, 1);
 eq('one query succeeded', partial.stats.succeeded, 1);
 ok('failed query is still in the ledger', partial.ledger.rows.some(r => !r.ok));
 ok('answer still produced', partial.answer.includes('Partial'));
-tavilyBehavior = () => ({ status: 200 });
+braveBehavior = () => ({ status: 200 });
 
 section('orchestrator: no evidence at all → actionable report, not a crash');
 orScript = [orChat(PLAN_JSON)];
-orCalls = []; tavilyCalls = [];
-tavilyBehavior = () => ({ status: 500 });
+orCalls = []; braveCalls = [];
+braveBehavior = () => ({ status: 500 });
 const none = await runSurfAi({ question: 'everything is down' }, { mode: 'normal', flags: { 'no-cache': true } });
 eq('zero sources', none.stats.sources, 0);
 ok('emits the no-evidence report', none.answer.includes('No sources retrieved'));
 ok('report tells the user how to fix it', none.answer.includes('keys list'));
 ok('did not waste an LLM call on nothing', orCalls.length === 1);
-tavilyBehavior = () => ({ status: 200 });
+braveBehavior = () => ({ status: 200 });
+
+section('the hard stop: no Brave key means no answer from anywhere else');
+{
+  // v7 answered this situation from Wikipedia and exited 0, so a caller could
+  // not tell a researched answer from an encyclopedia summary. There is no
+  // longer any code path that can do that.
+  const { loadState, saveStateAtomic } = await import('../src/lib/state.mjs');
+  const st = await loadState();
+  const savedKeys = st.brave.keys;
+  const savedValid = st.brave.validated;
+  st.brave.keys = [];
+  st.brave.validated = [];
+  await saveStateAtomic(st);
+
+  orScript = [orChat(PLAN_JSON)];
+  orCalls = []; braveCalls = [];
+  const nokey = await runSurfAi({ question: 'no key at all' }, { mode: 'normal', flags: { 'no-cache': true } });
+  eq('not one search was attempted', braveCalls.length, 0);
+  eq('and nothing was retrieved', nokey.stats.sources, 0);
+  ok('the answer is the failure report, not a synthesis', nokey.answer.includes('No sources retrieved'));
+  ok('every query failed for the same, stated reason',
+    nokey.ledger.rows.every(r => !r.ok) && nokey.ledger.rows.length > 0);
+  ok('the reason names the Brave key',
+    /Brave|brave/.test(JSON.stringify(nokey.ledger.rows.map(r => r.error))));
+
+  st.brave.keys = savedKeys;
+  st.brave.validated = savedValid;
+  await saveStateAtomic(st);
+}
 
 section('render');
 const { renderMarkdown } = await import('../src/lib/ai/render.mjs');
 const md = renderMarkdown(normal, { ledger: true });
 ok('answer first', md.startsWith('# Answer'));
 ok('sources section present', md.includes('## Sources'));
-ok('ledger table present', md.includes('| Round |'));
+ok('ledger table present', md.includes('| Wave |'));
+ok('ledger table records the tree', md.includes('| Depth |') && md.includes('| Parent |'));
 ok('footer present', md.includes('surf-ai `normal`'));
 ok('stop reason present', md.includes('Stopped because'));
 const mdLean = renderMarkdown(normal);
-ok('ledger omitted by default', !mdLean.includes('| Round |'));
+ok('ledger omitted by default', !mdLean.includes('| Wave |'));
 
 // ---------------------------------------------------------------- summary ---
 

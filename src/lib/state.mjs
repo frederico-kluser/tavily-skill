@@ -1,6 +1,8 @@
 // State management: ~/.config/surf/keys.json with atomic writes, lockfile,
-// monthly auto-reset of burned keys, and one-shot migration of the legacy
-// ~/.cache/tavily-skill/ directory.
+// monthly auto-reset of burned keys, a cached validation verdict per key, and
+// one-shot migrations for two pieces of history: the legacy
+// ~/.cache/tavily-skill/ directory, and Tavily/Parallel key sections left over
+// from v7 (rescued to a sidecar file, never silently deleted).
 
 import { mkdir, readFile, writeFile, rename, rm, stat, chmod, readdir, open } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
@@ -20,17 +22,23 @@ export const LEGACY_CACHE_DIR = join(homedir(), '.cache', 'tavily-skill');
 // for free: multi-key rotation, burn-on-auth-failure, monthly un-burn, and
 // 429 cooldowns. It is deliberately absent from every `capabilityMap` chain,
 // so a search dispatch can never route to it.
-export const PROVIDERS = ['tavily', 'parallel', 'brave', 'openrouter'];
-// Providers that answer web searches. Used where "a provider" means "something
-// that can return search results" (setup wizard totals, doctor output).
-export const SEARCH_PROVIDERS = ['tavily', 'parallel', 'brave'];
+export const PROVIDERS = ['brave', 'openrouter'];
+// Providers that answer web searches. Brave is the only one, by design — see
+// src/lib/providers/index.mjs for why that is enforced structurally.
+export const SEARCH_PROVIDERS = ['brave'];
 export const SCHEMA_VERSION = 1;
 
 const BURNED_CAP = 50;
 
-function blankProvider() {
-  return { keys: [], current: 0, burned: [], cooldowns: [] };
+export function blankProvider() {
+  return { keys: [], current: 0, burned: [], cooldowns: [], validated: [] };
 }
+
+// How long a live key validation is trusted before we re-check. Validating a
+// Brave key is free (a q-less request is rejected before it is billed), but it
+// still costs a round-trip and a slot in the 1-second rate window, so the
+// verdict is cached rather than re-proved on every invocation.
+export const VALIDATION_TTL_MS = Number(process.env.SURF_BRAVE_VALIDATION_TTL_MS) || 7 * 24 * 60 * 60 * 1000;
 
 function blankState() {
   const s = { schema_version: SCHEMA_VERSION, last_ok_provider: null };
@@ -83,7 +91,61 @@ function normalizeProvider(p) {
       ? obj.cooldowns.filter(c => c && typeof c === 'object' && Number.isInteger(c.index)
           && typeof c.until === 'string' && new Date(c.until).getTime() > now)
       : [],
+    // Cached live-validation verdicts, so the "is this key valid?" gate does not
+    // pay a round-trip on every invocation. Entries older than the TTL are
+    // pruned here, which is also what makes the TTL authoritative in one place.
+    // NOTE: this object literal is a WHITELIST — a field not listed here is
+    // silently dropped by the next saveStateAtomic.
+    validated: Array.isArray(obj.validated)
+      ? obj.validated.filter(v => v && typeof v === 'object' && Number.isInteger(v.index)
+          && typeof v.at === 'string' && now - new Date(v.at).getTime() < VALIDATION_TTL_MS)
+      : [],
   };
+}
+
+/**
+ * When a burned key auto-un-burns. Burns are cleared on the first load of the
+ * next calendar month (applyMonthlyReset below), so this is the date to quote
+ * to a user staring at a burned key.
+ *
+ * Lives here rather than in the CLI layer because dispatch and the preflight
+ * gate both need it, and the hot path must not import a CLI module.
+ */
+export function nextResetIso(burnedAt) {
+  const d = new Date(burnedAt);
+  if (Number.isNaN(d.getTime())) return '—';
+  return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 1, 0, 0, 0)).toISOString();
+}
+
+/** The cached validation verdict for one key index, or null. */
+export function getValidation(state, provider, index) {
+  const p = state[provider];
+  if (!p || !Array.isArray(p.validated)) return null;
+  const hit = p.validated.find(v => v.index === index);
+  if (!hit) return null;
+  const at = new Date(hit.at).getTime();
+  if (!Number.isFinite(at) || Date.now() - at > VALIDATION_TTL_MS) return null;
+  return hit;
+}
+
+/** Record a live validation verdict for one key index. */
+export function setValidation(state, provider, index, { ok, status, reason } = {}) {
+  const p = state[provider];
+  if (!p) return;
+  if (!Array.isArray(p.validated)) p.validated = [];
+  const entry = { index, at: new Date().toISOString(), ok: !!ok, status: status ?? null, reason: reason ?? null };
+  const i = p.validated.findIndex(v => v.index === index);
+  if (i >= 0) p.validated[i] = entry;
+  else p.validated.push(entry);
+}
+
+/** Forget a cached verdict (after a burn, or when the key list shifts). */
+export function clearValidation(state, provider, index) {
+  const p = state[provider];
+  if (!p || !Array.isArray(p.validated)) return;
+  p.validated = index === undefined
+    ? []
+    : p.validated.filter(v => v.index !== index);
 }
 
 function applyMonthlyReset(state) {
@@ -153,6 +215,13 @@ export async function loadState({ skipMonthlyReset = false } = {}) {
     try {
       const txt = await readFile(KEYS_FILE, 'utf8');
       const parsed = JSON.parse(txt);
+      const rescued = await rescueLegacyProviderKeys(parsed);
+      if (rescued) {
+        process.stderr.write(
+          `\u26a0 surf v8 is Brave-only. Your Tavily/Parallel keys were copied to ${rescued} ` +
+          `before being removed from keys.json — nothing was destroyed.\n`,
+        );
+      }
       raw = normalizeFullState(parsed);
     } catch {
       raw = blankState();
@@ -227,6 +296,9 @@ export function cooldownActive(providerState, index, now = Date.now()) {
 export function markBurned(state, provider, index, reason) {
   const p = state[provider];
   if (!p) return;
+  // A burn overrides any cached "valid" verdict: proof from the live API beats
+  // a week-old cache entry.
+  clearValidation(state, provider, index);
   if (p.burned.some(b => b.index === index)) return;
   p.burned.push({ index, at: new Date().toISOString(), reason: String(reason || 'unknown') });
   while (p.burned.length > BURNED_CAP) p.burned.shift();
@@ -235,6 +307,62 @@ export function markBurned(state, provider, index, reason) {
 export function clearBurned(state, provider) {
   if (provider) state[provider].burned = [];
   else for (const p of PROVIDERS) state[p].burned = [];
+}
+
+/**
+ * Why a provider cannot serve a request right now, in words a user can act on.
+ *
+ * The old NoProviderAvailable message always said "keys add", even when the
+ * user had a perfectly good key that had merely been burned — for which the fix
+ * is `keys reset`, not another key. One function, so every throw site agrees.
+ */
+export function explainUnusable(state, provider) {
+  const p = state[provider];
+  if (!p || !p.keys.length) {
+    return { reason: 'no key configured', fix: `surf-research-skill keys add --provider ${provider} <key>` };
+  }
+  const burnedIdx = new Set(p.burned.map(b => b.index));
+  const usable = p.keys.map((_, i) => i).filter(i => !burnedIdx.has(i));
+  if (!usable.length) {
+    const b = p.burned[0] || {};
+    return {
+      reason: `all ${p.keys.length} key(s) burned (${b.reason || 'auth'}, at ${b.at || 'unknown'}; auto-resets ${nextResetIso(b.at)})`,
+      fix: `surf-research-skill keys reset --provider ${provider}`,
+    };
+  }
+  const now = Date.now();
+  const cooling = usable.filter(i => cooldownActive(p, i, now));
+  if (cooling.length === usable.length) {
+    const c = (p.cooldowns || []).find(x => x.index === cooling[0]);
+    return {
+      reason: `all usable key(s) are cooling down after a rate limit until ${c ? c.until : 'shortly'}`,
+      fix: 'wait for the cooldown to expire, or add another key to widen the rate budget',
+    };
+  }
+  return null;
+}
+
+/**
+ * One-shot rescue of keys belonging to providers this version no longer
+ * supports. v8.0.0 dropped Tavily and Parallel; silently deleting paid keys
+ * from a user's config would be indefensible, so they are copied out first.
+ */
+async function rescueLegacyProviderKeys(parsed) {
+  const legacy = {};
+  for (const name of ['tavily', 'parallel']) {
+    const sec = parsed && parsed[name];
+    if (sec && Array.isArray(sec.keys) && sec.keys.length) legacy[name] = sec;
+  }
+  if (!Object.keys(legacy).length) return null;
+  const file = join(CONFIG_DIR, `keys.legacy-${new Date().toISOString().slice(0, 10)}.json`);
+  try {
+    if (!existsSync(file)) {
+      await writeFile(file, JSON.stringify(legacy, null, 2), { mode: 0o600 });
+    }
+    return file;
+  } catch {
+    return null;
+  }
 }
 
 export async function ensureCacheDir() {

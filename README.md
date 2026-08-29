@@ -12,8 +12,9 @@
 </p>
 
 <p align="center">
-  <strong>Autonomous web research for AI coding agents.</strong><br/>
-  You state your situation; the CLI runs the whole loop — an LLM plans the queries, they fan out concurrently across <strong>Tavily</strong>, <strong>Parallel AI</strong> and <strong>Brave</strong>, the LLM analyzes what is still open, searches again, and writes the cited answer. Key rotation, provider fallback and model failover all live inside the CLI. Ships a separate free, keyless search skill (<strong>surf-free-agent-skill</strong>: Wikipedia + DuckDuckGo, no API key).
+  <strong>Autonomous web research for AI coding agents, on Brave Search and nothing else.</strong><br/>
+  You state your situation; the CLI runs the whole loop — an LLM plans the queries, up to <code>--sub-agents</code> of them run at once against <strong>Brave</strong> (paced to your plan's real rate limit), the analyst says which branches are still thin, and the frontier <em>descends</em> into them instead of searching wider. Key rotation, model failover and a cross-process rate limiter live inside the CLI.<br/>
+  <strong>No valid Brave key means exit 78 before anything runs.</strong> It answers from Brave, or it tells you why it cannot — it never quietly answers from somewhere else.
 </p>
 
 ---
@@ -32,46 +33,52 @@ pick one of two modes.
 ┌──────────────────────────────────────────────────────────────────┐
 │ surf-ai                                                          │
 │                                                                  │
+│  0. GATE        a valid Brave key, or exit 78. Free to check,    │
+│                 cached 7 days. Nothing below runs without it.    │
 │  1. PLAN        DeepSeek V4 Pro (OpenRouter) → sub-questions     │
-│                 + a category-diverse query array                 │
-│  2. SEARCH      ALL queries at once · bounded worker pool ·      │
-│                 tavily → parallel → brave → keyless ·            │
-│                 multi-key rotation · per-key cooldowns           │
-│  3. ANALYZE     DeepSeek reads the harvest → what is still       │
-│     (unlimit)   open + the queries that would close it           │
-│  4. LOOP        open points become round N+1                     │
-│     (unlimit)                                                    │
+│                 + a category-diverse, PRIORITISED query array    │
+│  2. WAVE        up to --sub-agents queries at once (default 10), │
+│                 Brave only · multi-key rotation · per-key        │
+│                 cooldowns · paced to the plan's real req/s       │
+│  3. ANALYZE     DeepSeek reads the harvest → what is still open, │
+│     (unlimit)   which branches are finished, is it saturated     │
+│  4. DEEPEN      follow-ups enter a priority FRONTIER as tree     │
+│     (unlimit)   nodes that know their parent and depth, so the   │
+│                 next wave descends instead of widening           │
 │  5. SYNTHESIZE  the answer, in the shape the agent asked for,    │
 │                 cited against a numbered source index            │
 │                                                                  │
-│  normal  runs 1 → 2 → 5        (2 LLM calls, exactly one round)  │
-│  unlimit runs 1 → 2 → 3 → 4 → … → 5                              │
+│  normal  runs 0 → 1 → 2 → 5     (2 LLM calls, exactly one wave)  │
+│  unlimit runs 0 → 1 → 2 → 3 → 4 → … → 5                          │
 └──────────────────────────────────────────────────────────────────┘
     ↓
   finished, cited answer
 ```
 
 ```bash
-surf-search-normal  "<question>" --task … --goal … --insights …   # 1 round, fits the bash timeout
-surf-search-unlimit "<question>" --max-rounds 6                    # as many rounds as needed
+surf-search-normal  "<question>" --task … --goal … --insights …   # 1 wave, fits the bash timeout
+surf-search-unlimit "<question>" --sub-agents=10 --max-depth 3     # as many waves as needed
 ```
 
-Everything that can go wrong is absorbed in there — 429s, burned keys, an
-out-of-credit key, a model that 404s, a provider with no eligible endpoint, a
-failed search, a reply that isn't valid JSON. **The CLI degrades and labels the
-degradation; it never hands the agent an error to babysit.** No OpenRouter key
-at all? It still searches and returns a cited evidence brief.
+Almost everything that can go wrong is absorbed in there — 429s and their
+backoff, burned keys, rate-limit pacing, a model that 404s, a rejected JSON
+schema, a failed search, a reply that isn't valid JSON. **The CLI degrades and
+labels the degradation; it never hands the agent an error to babysit.** No
+OpenRouter key at all? It still searches and returns a cited evidence brief.
+
+**One thing is deliberately NOT absorbed: a missing or invalid Brave key.**
+That exits 78 before any work starts. There is nothing to degrade to, and
+pretending otherwise is how v7 answered research questions out of Wikipedia at
+exit 0.
 
 ```
-surf-search-normal  ┐                ┌─▶ Tavily    search · extract · crawl · map
-surf-search-unlimit ┼─▶ surf-ai ─────┼─▶ Parallel  search · extract · async research
-surf-research-skill ┘        │       ├─▶ Brave     search (own index)
-    ai --mode …              │       └─▶ keyless   Wikipedia + DuckDuckGo (last resort)
+surf-search-normal  ┐                ┌─▶ Brave /web/search
+surf-search-unlimit ┼─▶ surf-ai ─────┤     the ONLY search backend
+surf-research-skill ┘        │       │     multi-key · cross-process rate limiter
+    ai --mode …              │       └─▶ (no fallback provider. none. by design.)
                              │
                              └─▶ OpenRouter ─▶ DeepSeek V4 Pro
                                                plan · analyze · synthesize
-
-free search   ──▶ surf-free-agent-skill ──▶ Wikipedia + DuckDuckGo (keyless, no API key)
 
 plan / design ──▶ surf-plan-agent-skill ──▶ Normal (research-grounded)
                           │         └ Deep  (+ ambiguity sweep, auto on
@@ -81,22 +88,23 @@ plan / design ──▶ surf-plan-agent-skill ──▶ Normal (research-grounde
 
 | | |
 |---|---|
-| **Status** | v7.0.0 (npm) |
+| **Status** | v8.0.0 (npm) — **breaking**: Brave-only, see [the changelog](CHANGELOG.md) |
 | **Install** | `npm i -g surf-agent-skill` (Linux · macOS · Windows) |
-| **Skills shipped** | `surf-research-agent-skill` (surf-ai) · `surf-plan-agent-skill` · `surf-free-agent-skill` |
-| **Bins shipped** | `surf`, `surf-search-normal`, `surf-search-unlimit`, `surf-research-skill`, `surf-plan-skill`, `surf-free-skill` |
+| **Search backend** | **Brave Search only.** No fallback provider, no keyless tier. A missing or invalid key is exit 78. |
+| **Skills shipped** | `surf-research-agent-skill` (surf-ai) · `surf-plan-agent-skill` |
+| **Bins shipped** | `surf`, `surf-search-normal`, `surf-search-unlimit`, `surf-research-skill`, `surf-plan-skill` |
 | **Runtime** | Node ≥ 18. Zero npm deps. |
-| **Storage** | `~/.config/surf/keys.json` (chmod 600) — the only place a key is ever written. CLI reads search keys from there only; `OPENROUTER_API_KEY` is also accepted from env, in memory. Library mode reads env/`.env` too ([Security](#security)). |
+| **Storage** | `~/.config/surf/keys.json` (chmod 600) — the only place a key is ever written. Also caches the free validation verdict for 7 days. `OPENROUTER_API_KEY` is accepted from env, in memory. Library mode reads env/`.env` too ([Security](#security)). |
 | **Supported agents** | Claude Code · GitHub Copilot CLI · Pi Coding Agent · OpenCode · Codex CLI |
 | **Spec** | [Anthropic Agent Skills](https://docs.claude.com/en/docs/agents-and-tools/agent-skills) |
 
 ## Quickstart (60 seconds)
 
 ```bash
-npm i -g surf-agent-skill          # installs 3 skills + 6 bins (cross-OS)
-surf                         # interactive: add keys with LIVE validation
-                             #   ✓ valid (tavily, HTTP 200, 1.2s, 1 credit)
-                             #   ✗ invalid (auth, HTTP 401) — NOT saved
+npm i -g surf-agent-skill    # installs 2 skills + 5 bins (cross-OS)
+surf                         # interactive: add your Brave key, validated LIVE and FREE
+                             #   ✓ valid (brave, 340ms, free probe, 0 credits)
+                             #   ✗ invalid key (Brave answers 422 SUBSCRIPTION_TOKEN_INVALID) — NOT saved
 surf-research-skill ai-setup # the OpenRouter key that powers surf-ai (free to validate)
 
 # Autonomous research — write the brief, get the answer:
@@ -132,10 +140,17 @@ Long briefs go in a file: `--brief-file brief.json` with
 
 | | `surf-search-normal` | `surf-search-unlimit` |
 |---|---|---|
-| Rounds | Exactly 1 | Until resolved (cap 6, `--max-rounds` up to 50) |
+| Waves | Exactly 1 | Until resolved, saturated, or every branch closes (cap 6, `--max-rounds` up to 50) |
+| Depth | ≤ 2 | ≤ 3 (`--max-depth`, max 6) |
+| Sub-agents per wave | ≤ 10 (`--sub-agents`) | ≤ 10 (`--sub-agents`) |
 | Time | Fitted inside the harness bash timeout | No self-imposed deadline |
-| LLM calls | 2 | 2 + 1 per extra round |
+| LLM calls | 2 | 2 + 1 per extra wave |
+| Brave requests | ≤ 10 | ≤ waves × `--sub-agents` |
 | Typical | 45–110 s · ~$0.01–0.03 | 2–15 min · ~$0.03–0.15 |
+
+A wave is not a bigger round: a depth-2 query exists **because** a depth-1
+result raised it, and `--ledger` shows the parent of every query. That is what
+separates deepening from re-searching.
 
 `surf-search-unlimit` enforces no deadline of its own — on Claude Code give the
 Bash call `timeout: 600000`, on Pi core just run it, on GH Copilot CLI run
@@ -149,34 +164,36 @@ Bash call `timeout: 600000`, on Pi core just run it, on GH Copilot CLI run
 # One-liner cross-OS install (Linux, macOS, Windows)
 npm i -g surf-agent-skill
 
-# Postinstall symlinks all 3 skills into every supported harness, initializes
+# Postinstall symlinks both skills into every supported harness, initializes
 # ~/.config/surf/keys.json, and prints a hint. Then:
 
-surf                            # search keys (tavily / parallel / brave), live-validated
+surf                            # your Brave key — validated live, for free
 surf-research-skill ai-setup    # the OpenRouter key surf-ai plans + synthesizes with
 
-# A toolbox command with no search keys, in a TTY, auto-launches the wizard:
+# Any command that would touch Brave checks the key first:
 surf-research-skill search "your query"
-# → "No keys configured. Launching setup wizard…"
-# → prompts Tavily #1, #2, … Parallel … Brave … OpenRouter …
-# → resumes your command
+# → in a TTY with no valid key: prints the gate error, offers the wizard, resumes
+# → outside a TTY: prints the gate error and exits 78
 #
-# surf-search-normal / surf-search-unlimit / `ai` never do this — they degrade
-# to the keyless tier instead of hijacking your run. Run `surf` once first.
+# The surf-search-* commands gate the same way, before the LLM plans anything.
+# In v7 they degraded to a keyless tier instead; they no longer can.
 
 # In each project where you'll use surf (REQUIRED for GH Copilot CLI):
 cd path/to/your-project
 surf-research-skill project-config
 ```
 
-**Degrade path, so nothing is a hard blocker:**
+**What degrades, and what does not:**
 
 | You have | surf-ai does |
 |---|---|
-| Search keys + OpenRouter key | Everything: plan → fan-out → analyze → synthesize |
-| Search keys, no OpenRouter key | Deterministic plan, real searches, a cited evidence brief, no synthesis — labelled `⚠ Degraded mode` |
-| OpenRouter key, no search keys | Falls back to the keyless tier (Wikipedia + DuckDuckGo) and still synthesizes |
-| Neither | `surf-free-skill "query"` — keyless, zero setup |
+| Brave key + OpenRouter key | Everything: gate → plan → wave → analyze → deepen → synthesize |
+| Brave key, no OpenRouter key | Deterministic plan, real searches, a cited evidence brief, no synthesis — labelled `⚠ Degraded mode` |
+| OpenRouter key, **no valid Brave key** | **Nothing. Exit 78.** There is no search backend to degrade to, and inventing one would be lying about where the answer came from. |
+
+The LLM is optional; the search backend is not. That asymmetry is the whole
+design: a research answer with no sources is not a degraded answer, it is a
+fabricated one.
 
 ### Use as a Node library
 
@@ -185,7 +202,7 @@ npm i surf-agent-skill
 ```
 
 ```js
-import { search, searchParallel, extract, research } from 'surf-agent-skill';
+import { search, searchParallel, GateError } from 'surf-agent-skill';
 
 // Auto-discovers keys: opts > process.env > .env > ~/.config/surf/keys.json
 const r = await search('claude api', { max: 3 });
@@ -193,18 +210,24 @@ console.log(r.data.results[0].url);
 
 // Or pass keys explicitly (great for serverless / Next.js API routes)
 const r2 = await search('x', {
-  tavilyKeys: [process.env.MY_TAVILY_1, process.env.MY_TAVILY_2],
-  depth: 'advanced',
+  braveKeys: [process.env.MY_BRAVE_1, process.env.MY_BRAVE_2],
+  mode: 'slow',                      // 20 results
+  domains: 'docs.rs,github.com',     // OR-grouped site: operators
+  time: 'year',                      // → Brave freshness=py
 });
 
 // Batch search (single call, N queries, partial-failure tolerant, sequential)
 const batch = await search(['topic A', 'topic B', 'topic C'], { max: 2 });
 
-// Parallel search (concurrent fan-out, bounded worker pool)
-const par = await searchParallel(['angle A', 'angle B', 'angle C'], { concurrency: 6, max: 3 });
+// Parallel fan-out, paced to your Brave plan's real rate limit
+const par = await searchParallel(['angle A', 'angle B', 'angle C'], { subAgents: 6, max: 3 });
 
-// Deep research (Parallel's Task API)
-const job = await research('compare X vs Y', { model: 'mini' });
+// The gate applies to the library too — it rejects rather than degrading.
+try {
+  await search('x', { braveKeys: [] });
+} catch (e) {
+  if (e instanceof GateError) console.error(e.code); // 'BraveKeyMissing'
+}
 console.log(job.data.content);
 ```
 
@@ -220,7 +243,7 @@ const result = await runSurfAi(
     goal: 'know which request fields to send and what silently degrades',
     insights: 'I think response_format.json_schema.strict works everywhere',
   },
-  { mode: 'normal' },   // or 'unlimit', plus concurrency / maxRounds / maxQueries / aiModel
+  { mode: 'normal' },   // or 'unlimit', plus subAgents / maxRounds / maxDepth / aiModel
 );
 
 console.log(result.answer);              // the synthesized markdown
@@ -233,7 +256,7 @@ console.log(result.diagnostics.degraded); // [] when every stage ran on the LLM
 failures — inspect `result.diagnostics.degraded` and `result.stats.sources`.
 
 Library works server-side (Node / Next.js API routes / Express). Not for
-browser bundles — Tavily, Parallel and OpenRouter don't enable CORS for
+browser bundles — Brave and OpenRouter don't enable CORS for
 browser origins.
 
 ---
@@ -255,38 +278,81 @@ surf-ai makes that loop **code**. The agent writes a four-line brief and gets
 a cited answer. The loop is deterministic, the concurrency is bounded, the
 coverage is auditable (`--ledger`), and the cost is visible in the footer.
 
-### 2. One key, one provider, one outage away from a broken loop
+### 2. A research tool that degrades silently is worse than one that fails
 
-Most agent search skills are **1-to-1** with a provider. When a key dies or a
-provider has an outage, the loop breaks. `surf-research-agent-skill` is a connector:
+Up to v7 this package fanned out across Tavily, Parallel and Brave, and — when
+every paid key was exhausted — quietly dropped to a free Wikipedia/DuckDuckGo
+tier and returned a confident, cited-looking answer at exit 0. The caller could
+not tell that answer apart from a real one.
 
-- **Multi-key per provider.** Add as many keys as you want; rotation is
-  automatic on `401`/`403`/`402` (auth, insufficient credits) or persistent
-  `5xx`. Burned keys auto-reset on the first day of the next calendar
-  month (assuming monthly billing). Rate-limited keys get a short cooldown
-  that persists across runs instead of being hammered again.
-- **Provider fallback.** If all Tavily keys are burned, `search`/`extract`
-  fail over to Parallel — transparently. `crawl` and `map` stay on Tavily
-  (Parallel doesn't have them). `research` defaults to Parallel first
-  because its Task API is the strongest deep-research surface. surf-ai adds
-  one more rung: when every keyed provider is exhausted it drops to the free
-  keyless tier rather than returning nothing.
-- **Model fallback too.** The same idea applied to the LLM: surf-ai walks a
-  verified DeepSeek chain (`v4-pro` → `v4-flash-0731` → `v4-flash` → `v3.2`
-  → `chat-v3.1`), downgrades a rejected JSON schema to plain-text JSON, and
-  parses replies that arrive wrapped in prose or code fences.
-- **Hot-path memory.** The last successful provider/key is remembered in
-  `~/.config/surf/keys.json`. The next call starts there — no cold-start
-  cost.
-- **Predictable output.** `--json` returns the same normalized envelope
-  no matter which provider answered.
+v8 removes the choice. **Brave Search is the only backend**, and there is no
+tier underneath it. That is enforced structurally, not by convention: no other
+search adapter exists in the codebase, so there is no code path that *could*
+answer from somewhere else.
+
+What that buys you:
+
+- **A hard stop you can branch on.** No valid Brave key → **exit 78**
+  (`EX_CONFIG`), before any LLM call, with a message naming the exact fix.
+  78 is distinct from 1 (the operation ran and failed) and 2 (you typed the
+  command wrong), so an orchestrating agent knows retrying is pointless.
+- **Free validation, so the gate is real.** A Brave request with no `q` is
+  rejected before it is billed, and a good key and a bad key are told apart by
+  `error.code`. Validating costs nothing, which is what makes it affordable to
+  check on every invocation (cached 7 days).
+- **Multi-key that means something specific.** Add as many Brave keys as you
+  like. Rotation is automatic on auth failure, burned keys auto-reset on the
+  first of the month, and rate-limited keys get a persisted cooldown. But the
+  real reason for a second key is throughput: **each key carries its own
+  per-second rate budget**, so two keys genuinely double how many sub-agents
+  can search at the same time.
+- **Rate limiting that survives process boundaries.** Brave enforces a
+  1-second sliding window counted on arrival. The sub-agents of
+  `surf-research-agent-skill` are separate OS processes, so surf's token bucket
+  lives on disk and is shared by every surf process on the machine. Asking for
+  10 sub-agents on a 1 req/s plan does not fail — it queues, and surf says so.
+- **Errors classified by cause, not by status code.** Brave answers an invalid
+  key *and* a bad parameter with the same HTTP 422. v7 read both as "bad key"
+  and burned every key in the ring the first time someone typed `--country zzz`.
+  v8 branches on `error.code`, so a typo costs a usage error and a plan-gated
+  feature costs nothing at all.
+- **Model fallback is unchanged.** surf-ai still walks a verified DeepSeek chain
+  (`v4-pro` → `v4-flash-0731` → `v4-flash` → `v3.2` → `chat-v3.1`), downgrades a
+  rejected JSON schema to plain-text JSON, and parses replies wrapped in prose
+  or code fences.
+- **Predictable output.** `--json` returns the same normalized envelope every
+  time.
+
+### 3. "Deeper" should mean deeper, not just longer
+
+v7's loop was flat: plan N queries, run them, ask the model for N more, run
+those. Nothing recorded *why* a query existed or *what it descended from*, so
+depth was indistinguishable from repetition and the only thing stopping it was a
+round counter.
+
+v8 runs a **priority frontier over a tree**. Every query is a node that knows
+its parent, its depth and its kind (`breadth` / `depth` / `verify`), so the loop
+can reason about a *branch*: it sees that one sub-question is saturated while
+another is still thin, closes the first, and spends the next wave on the second.
+
+- a **per-branch quota**, so one hot sub-question cannot consume a whole wave
+  while three others go unresearched;
+- a **verification reserve**, so falsifying a contested claim outranks widening;
+- **deterministic admission** — duplicates, over-deep nodes and closed branches
+  are rejected by plain code, and every rejection is *recorded* rather than
+  silently dropped (a forgotten rejection gets re-proposed every round and the
+  loop never converges);
+- **automatic branch closure** after two waves that add no new sources.
+
+`--ledger` prints the whole thing: the coverage table with depth and parent
+columns, and the list of candidates the frontier refused, with reasons.
 
 ---
 
 ## Supported agents
 
 > **What the installer does and doesn't do.** `npm i -g surf-agent-skill` symlinks
-> the three skills into every harness skill dir it knows
+> both skills into every harness skill dir it knows
 > (`~/.agents/skills/`, `~/.claude/skills/`, `~/.codex/skills/`,
 > `~/.pi/agent/skills/`) and creates `~/.config/surf/keys.json`. It writes
 > **no** timeout config anywhere. Raising a bash timeout is a separate,
@@ -297,7 +363,7 @@ provider has an outage, the loop breaks. `surf-research-agent-skill` is a connec
 
 ```bash
 npm i -g surf-agent-skill
-# Symlinks the 3 skills into ~/.claude/skills/. Writes no settings.
+# Symlinks both skills into ~/.claude/skills/. Writes no settings.
 
 # Per-project, to raise the 120 s default to 300 s:
 cd path/to/your-project
@@ -324,9 +390,9 @@ background** rather than killing it — but don't rely on that: for
 
 ```bash
 npm i -g surf-agent-skill
-# Symlinks the 3 skills into ~/.agents/skills/ — the canonical skill dir
-# GH Copilot CLI reads (~/.agents/skills/surf-research-agent-skill, …/surf-plan-agent-skill,
-# …/surf-free-agent-skill). Nothing is written under ~/.copilot/.
+# Symlinks both skills into ~/.agents/skills/ — the canonical skill dir
+# GH Copilot CLI reads (~/.agents/skills/surf-research-agent-skill, …/surf-plan-agent-skill).
+# Nothing is written under ~/.copilot/.
 ```
 
 **Per-project**, run inside the project root:
@@ -363,7 +429,7 @@ default. So long calls run unbounded. This is the best harness for
 `surf-search-unlimit`:
 
 ```bash
-surf-search-unlimit "<open-ended question>" --task … --goal … --max-rounds 6
+surf-search-unlimit "<open-ended question>" --task … --goal … --sub-agents=10 --max-depth 3
 ```
 
 surf can't detect Pi from the environment. For the **manual** commands that
@@ -371,7 +437,7 @@ means passing `--no-budget` (or `SURF_NO_TIMEOUT=1`) so surf doesn't self-abort
 at its 30 s worst-case guess:
 
 ```bash
-surf-research-skill search-parallel --queries-file q.json --concurrency 8 --no-budget
+surf-research-skill search-parallel --queries-file q.json --sub-agents=8 --no-budget
 ```
 
 `surf-search-unlimit` already runs with no self-budget, and
@@ -384,7 +450,7 @@ cap; `surf-research-skill project-config` raises that to 300 s (writes
 
 ### OpenCode & Codex CLI
 
-The installer symlinks all three skills into both harnesses' canonical dirs
+The installer symlinks both skills into both harnesses' canonical dirs
 (`~/.agents/skills/` for OpenCode, `~/.codex/skills/` for Codex CLI) — but it
 writes **no** timeout config for either, and `project-config` doesn't target
 them (it supports `copilot`, `claude`, `pi`).
@@ -445,8 +511,8 @@ If you see timeouts, the order of fixes:
 
 | Command | What it does |
 |---|---|
-| `surf-search-normal <q>` | **One** research round, fitted inside the harness bash timeout |
-| `surf-search-unlimit <q>` | Rounds until the analyst reports the question resolved |
+| `surf-search-normal <q>` | **One** wave, fitted inside the harness bash timeout |
+| `surf-search-unlimit <q>` | Waves until the question resolves, the sources saturate, or every branch closes |
 | `surf-research-skill ai <q> --mode normal\|unlimit` | The same engine as a subcommand |
 | `surf-research-skill ai-setup [--key …]` | Store the OpenRouter key (free validation) |
 | `surf ai-key` | Same, from the bundle CLI |
@@ -460,10 +526,15 @@ surf-ai flags:
 --deliverable "<the exact shape of answer you want back>"
 --brief-file <f.json>   {"question","task","goal","insights","deliverable"}
 
---max-rounds N     unlimit only (default 6, hard cap 50)
---max-queries N    per round (normal 6, unlimit 10, cap 24)
---concurrency N    parallel searches (normal 6, unlimit 8, cap 16)
---max N            results per search (normal 5, unlimit 8, cap 20)
+--sub-agents N     simultaneous searches (default 10, max 20). Also --sub-agents=N.
+                   THE one simultaneity budget: it is both the wave width and the
+                   worker-pool width, so the two can never multiply. Above what
+                   your Brave plan serves per second it queues, and surf says so.
+--concurrency N    deprecated alias for --sub-agents
+--max-depth N      how far a branch may descend (normal 2, unlimit 3, max 6)
+--max-rounds N     wave cap, unlimit only (default 6, hard cap 50)
+--max-queries N    frontier admissions per wave (>= --sub-agents)
+--max N            results per search (1-20). Overrides --search-mode.
 --budget-ms N      normal only — pass the timeout you gave the Bash call. 0 = unlimited
 --ai-model <slug>  override the LLM (default deepseek/deepseek-v4-pro)
 --search-mode <fast|normal|slow>
@@ -472,68 +543,86 @@ surf-ai flags:
 ```
 
 Exit codes: `0` an answer (possibly degraded) · `1` nothing retrieved at all ·
-`2` usage error · `143` the harness killed it.
+`2` usage error · **`78` no valid Brave key — configuration is broken, retrying
+will not help** · `143` the harness killed it.
 
 ### The manual toolbox
 
-| Command | What it does | Provider(s) |
-|---|---|---|
-| `setup` | Interactive wizard to add keys (TTY) — all 4 providers | n/a |
-| `project-config` | Write per-project bash-timeout config | n/a |
-| `search <q> [q2 ...]` | Web search; multiple positional args = **batch** (sequential) | tavily, parallel, **brave** |
-| `search-parallel <q…>` | **Parallel** fan-out (bounded pool); `--queries-file`, `--concurrency` | tavily, parallel, brave |
-| `extract <url> ...` | Pull markdown from URLs (`--urls-file` accepted) | tavily, parallel |
-| `crawl <url>` | Recursive site crawl | tavily |
-| `map <url>` | Sitemap discovery | tavily |
-| `research <topic>` | Sync deep research (50 s budget) | parallel, tavily |
-| `research-start <topic>` | Start async research | parallel, tavily |
-| `research-poll <id>` | Poll an async research job | (sticky to provider) |
-| `usage --provider <name>` | Provider's usage endpoint | per provider |
-| `cache-clear` | Purge response cache | n/a |
-| `cost [--reset]` | Local credit ledger (per-provider) | n/a |
-| `keys <subcmd>` | `add`, `remove`, `list`, `reset`, `clear` (`--provider tavily\|parallel\|brave\|openrouter`) | n/a |
+| Command | What it does |
+|---|---|
+| `setup` | Interactive wizard: your Brave key (required) + OpenRouter (TTY) |
+| `project-config` | Write per-project bash-timeout config |
+| `search <q> [q2 ...]` | Web search; multiple positional args = **batch** (sequential) |
+| `search-parallel <q…>` | Fan-out, paced to your Brave plan; `--queries-file`, `--sub-agents` |
+| `cache-clear` | Purge response cache |
+| `cost [--reset]` | Local request ledger |
+| `keys <subcmd>` | `add`, `remove`, `list`, `reset`, `clear` (`--provider brave\|openrouter`) |
+
+**Removed in v8:** `extract`, `crawl`, `map`, `research`, `research-start`,
+`research-poll`, `usage`. Brave's `/web/search` returns ranked links and
+snippets, never page content, and has no crawl, site-map or async-research
+endpoint — so these had no honest implementation. They now exit 2 with an
+explanation rather than an "unknown command". If you need a page's text, follow
+the URL yourself. (Brave *does* ship an `/llm/context` endpoint that returns
+extracted page content, but it is plan-gated — see
+[`references/brave-api.md`](references/brave-api.md).)
 
 Full reference: `SKILL.md`.
 
 Global flags every command accepts:
 
 ```
---provider <tavily|parallel|brave>  Force provider (disables fallback).
-                                      Not accepted by surf-ai — fallback is the point.
---mode <fast|normal|slow>           Search tier. Per-provider mapping:
-                                      fast   = Tavily depth=fast / Brave count=5
-                                      normal = default
-                                      slow   = Tavily depth=advanced / Brave count=20
-                                      (Parallel ignores — single mode.)
+--mode <fast|normal|slow>           Results per query: 5 / 10 / 20. Default normal.
                                     ⚠ On `surf-research-skill ai`, --mode means
                                       something else entirely: normal|unlimit.
                                       Use --search-mode there for the tier.
---no-fallback                       Keep default provider, no cross-provider fallback
+--max N                             Explicit result count, 1-20. Overrides --mode.
+--offset N                          Page index, 0-9 (Brave caps pagination there)
+--time <day|week|month|year>        → Brave freshness (pd/pw/pm/py)
+--start-date / --end-date YYYY-MM-DD  freshness range; beats --time
+--domains a.com,b.com               Restrict to these sites (OR-grouped site: ops)
+--exclude c.com                     Exclude a site (-site:)
+--country XX · --search-lang · --ui-lang · --safesearch <off|moderate|strict>
+--goggles <url>                     Brave Goggles re-ranking
+--result-filter <list>              web,news,discussions,faq,…
 --no-cache                          Skip response cache
 --no-budget                         Disable the self-budget abort — let calls run
                                       to the provider's per-request ceiling. No-limit
                                       harnesses only (Pi core). = SURF_NO_TIMEOUT=1
 --json                              Normalized envelope as JSON
 --raw-json                          Raw provider response (bypasses cache)
---confirm-expensive                 Allow operations estimated > 10 credits
 --quiet                             Silence progress logs (stderr)
 ```
 
+Every flag above is **validated before the request goes out**. A typo is a usage
+error (exit 2), not a silently different search — and, importantly, not a burned
+key: Brave answers a bad parameter with the same HTTP 422 it uses for a bad
+token, and v7 could not tell them apart.
+
 ### Search modes
 
+`--mode` selects how many results one question is worth. Brave has no native
+depth tiers, so the tier is expressed as breadth:
+
 ```bash
-surf-research-skill search "X" --mode fast    # 5 results / 1 credit Tavily / minimal latency
-surf-research-skill search "X" --mode normal  # Tavily basic depth, 10 results
-surf-research-skill search "X" --mode slow    # 20 results / Tavily advanced / deeper signal
+surf-research-skill search "X" --mode fast    # 5 results  — a quick fact check
+surf-research-skill search "X" --mode normal  # 10 results — the default
+surf-research-skill search "X" --mode slow    # 20 results — Brave's per-page maximum
 ```
 
-When no `--mode` flag is given, the CLI defaults to advanced depth (= slow mode, 20 results).
+With no `--mode`, you get `normal` (10). *In v7 the CLI silently injected
+"advanced" here, so every search ran at the widest and most expensive tier while
+`--help` promised `normal`.*
 
-Want to force a specific provider for a given mode?
+More results is the only way to get more text: Brave returns a `description`
+plus up to five `extra_snippets` per result, and no page content at all. Going
+past 20 means a **different query**, not a bigger one — `offset` is capped at
+page 9 and the well typically runs dry before that.
 
 ```bash
-surf-research-skill search "X" --provider brave --mode slow    # 20 brave results, no fallback
-surf-research-skill search "X" --provider tavily --mode fast   # Tavily fast tier
+# Narrow instead of widen — this is what actually deepens a search:
+surf-research-skill search "hnsw index limits" --domains postgresql.org --time year
+surf-research-skill search "hnsw index limits" --exclude medium.com --mode slow
 ```
 
 ---
@@ -565,18 +654,21 @@ should be, that decision belongs to surf-ai (the orchestrator's R1 rule forbids
 agents from running their own search loop — "Você nunca pesquisa").
 
 **Need true parallelism?** `surf-research-skill search-parallel` runs the queries
-**concurrently** through a bounded worker pool (default 6, cap 16), tolerant of
-partial failures (one 429 rotates keys/backs off; the batch never aborts). It
+**concurrently** through a bounded worker pool (`--sub-agents`, default 10, cap
+20) that is itself paced to your Brave plan's real requests-per-second, tolerant
+of partial failures (one 429 backs off from `x-ratelimit-reset`; the batch never
+aborts). It
 accepts positional queries and/or a JSON `--queries-file`
 (`[ "q", {"q":"…","id":"…","sub":"…"} ]`) and groups output by sub-question:
 
 ```bash
-surf-research-skill search-parallel "angle A" "angle B" "angle C" --concurrency 6 --json
-surf-research-skill search-parallel --queries-file q.json --concurrency 8 --no-budget --json
+surf-research-skill search-parallel "angle A" "angle B" "angle C" --sub-agents=6 --json
+surf-research-skill search-parallel --queries-file q.json --sub-agents=8 --no-budget --json
 ```
 
 On a no-limit harness (Pi core) add `--no-budget`; on time-limited harnesses
-keep `--concurrency` modest or split the file.
+keep `--sub-agents` modest or split the file — remember that on a slow Brave
+plan a wide fan-out spends wall-clock queueing, not searching.
 
 surf-ai uses this same bounded pool internally — it just writes the queries
 itself and reads the results back into a gap analysis, which is why an agent
@@ -593,13 +685,14 @@ the main result on stdout.
 Manual commands:
 
 ```
-[surf 17:58:12] ▸ search → tavily (key #0)
-[surf 17:58:14] ✓ search tavily 1234ms (2 credits)
-[surf 17:58:14] ↻ tavily 429 — backoff 1500ms (attempt 1/3)
-[surf 17:58:18] ⚠ tavily key #0 burned (401)
-[surf 17:58:18] ▸ search → parallel (key #0)
-[surf 17:58:20] ✓ search parallel 2102ms (2 credits)
-[surf 17:58:20] ⏱ batch done: 3/3 ok, 0 failed (8200ms, 6 credits)
+[surf 17:58:12] ▸ search → brave (key #0)
+[surf 17:58:12] ⓘ brave: paced 298ms (plan allows 1 req/s)
+[surf 17:58:14] ✓ search brave 1058ms (1 credits)
+[surf 17:58:14] ↻ brave 429 — backoff 654ms (attempt 1/3)
+[surf 17:58:18] ⚠ brave key #0 burned (422)
+[surf 17:58:18] ▸ search → brave (key #1)
+[surf 17:58:20] ✓ search brave 902ms (1 credits)
+[surf 17:58:20] ⏱ batch done: 3/3 ok, 0 failed (8200ms, 3 credits)
 ```
 
 surf-ai (a real `surf-search-unlimit` run):
@@ -608,13 +701,15 @@ surf-ai (a real `surf-search-unlimit` run):
 [surf 18:42:15] ⓘ surf-ai: using 1 OpenRouter key(s) from the environment (not persisted)
 [surf 18:42:15] ▸ surf-ai [unlimit] planning · harness=pi · no time budget (unlimit)
 [surf 18:42:42] ✓ plan deepseek/deepseek-v4-pro 26802ms (2550 tok, $0.00271)
-[surf 18:42:42] ⓘ surf-ai plan: 2 sub-question(s), 5 queries
-[surf 18:42:42] ▸ surf-ai round 1/3: 5 searches · concurrency 8
-[surf 18:42:48] ⏱ surf-ai round 1: 5/5 ok, 0 failed · 49 unique source(s)
+[surf 18:42:42] ⓘ surf-ai plan: 2 sub-question(s), 5 seed queries · up to 10 sub-agent(s) per wave, depth ≤ 3
+[surf 18:42:42] ▸ surf-ai wave 1/6: 5 sub-agent(s) · depth 0-0 · 2 open branch(es)
+[surf 18:42:48] ⏱ surf-ai wave 1: 5/5 ok, 0 failed · +49 new source(s) (49 total)
 [surf 18:44:03] ✓ analyze deepseek/deepseek-v4-pro 75065ms (9754 tok, $0.02349)
-[surf 18:44:03] ⓘ surf-ai: resolved after round 1 (confidence: high)
+[surf 18:44:03] ⓘ surf-ai: closed branch 'sq1' (the analyst reported it answered)
+[surf 18:44:03] ⓘ surf-ai: 3 open point(s) → 4/6 follow-up(s) admitted (4 queued, 2 rejected so far)
+[surf 18:44:09] ▸ surf-ai wave 2/6: 4 sub-agent(s) · depth 1-1 · 1 open branch(es)
 [surf 18:44:50] ✓ synthesize deepseek/deepseek-v4-pro 47436ms (14005 tok, $0.01094)
-[surf 18:44:50] ⏱ surf-ai done: 1 round(s), 5 queries, 49 source(s), 154970ms
+[surf 18:44:50] ⏱ surf-ai done: 2 wave(s), 9 queries, 71 source(s), 154970ms
 ```
 
 The format is stable for grep/parse. Use `--quiet` or `SURF_QUIET=1` to
@@ -624,42 +719,50 @@ Timestamps are in **UTC**.
 
 ---
 
-## Multi-key & fallback
+## Multi-key, rate limiting & the gate
 
-`~/.config/surf/keys.json` holds **four** provider sections — three search
-providers plus `openrouter`, the LLM surf-ai runs on. They share the same
-rotation machinery; `openrouter` is deliberately absent from every search
-capability chain, so a search can never be routed to it.
+`~/.config/surf/keys.json` holds **two** provider sections: `brave` (the search
+backend) and `openrouter` (the LLM). They share the same rotation machinery;
+`openrouter` is deliberately absent from the search capability chain, so a
+search can never be routed to it.
+
+**Why add a second Brave key.** Not redundancy — *throughput*. Brave enforces
+its rate limit per key, so two keys carry two per-second budgets and genuinely
+double how many sub-agents can search at once.
 
 ```
-keys.json (per provider — tavily | parallel | brave | openrouter):
+keys.json (per provider — brave | openrouter):
   keys:       [key0, key1, key2]
   current:    1                       ← starts here next call
-  burned:     [{ index: 0, reason: "401", at: "2026-05-15..." }]
+  burned:     [{ index: 0, reason: "422", at: "2026-05-15..." }]
                                       ← auto-reset on the 1st of next month
   cooldowns:  [{ index: 2, until: "2026-05-15T12:34:56Z" }]
                                       ← after a 429; persists across runs
+  validated:  [{ index: 1, at: "2026-05-15...", ok: true }]
+                                      ← the free gate verdict, TTL 7 days
 
 search call flow:
-  ┌─ load state, auto-reset burned ──┐
-  │                                  │
-  └─▶ chain = [last_ok_provider,    ─┤
-              ...rest_of_capability_chain]
-                                     │
-  for provider in chain:             │
-    for key in usable_keys(provider):│
-      try call                       │
-        200 ─▶ save last_ok, return  │
-        401/403/402 ─▶ burn key, next│
-        5xx x3 ─▶ burn key, next     │
-        429 ─▶ backoff, retry        │
-        4xx ─▶ raise (no fallback)   │
-    (no usable keys) ─▶ next provider│
-  raise AllProvidersExhausted ───────┘
+  ┌─ load state, auto-reset burned ───────────────────┐
+  │                                                   │
+  ├─▶ cache hit? ─▶ return it (no key needed, no cost)│
+  │                                                   │
+  ├─▶ THE GATE: a usable, validated Brave key?        │
+  │     no ─▶ exit 78. Nothing below runs.            │
+  │                                                   │
+  └─▶ for key in usable_keys(brave):                  │
+        take a slot from the cross-process rate bucket│
+        try call                                      │
+          200 ─▶ learn the plan's req/s, return       │
+          422 SUBSCRIPTION_TOKEN_INVALID ─▶ burn, next│
+          422 VALIDATION ─▶ raise (your parameter)    │
+          400 OPTION_NOT_IN_PLAN ─▶ raise (your plan) │
+          429 ─▶ backoff from x-ratelimit-reset, retry│
+          5xx x3 ─▶ cooldown the key, next            │
+      raise AllKeysExhausted ──────────────────────────┘
 
-surf-ai adds one more rung under that:
-  AllProvidersExhausted ─▶ keyless tier (wikipedia → ddg) ─▶ ledger row "FAILED"
-  …and a failed search is never dropped — it stays in the ledger with its reason.
+There is no rung below that. A failed search is never dropped — it stays in the
+ledger with its reason, and if every search failed the run says so instead of
+synthesizing an answer out of nothing.
 
 LLM call flow (src/lib/ai/openrouter.mjs):
   for model in [v4-pro, v4-flash-0731, v4-flash, v3.2, chat-v3.1]:
@@ -675,48 +778,43 @@ LLM call flow (src/lib/ai/openrouter.mjs):
   every rung failed ─▶ AiUnavailable ─▶ deterministic fallback, answer still returned
 ```
 
-Force a specific provider for debugging:
-
-```bash
-surf-research-skill search "x" --provider parallel
-# 'parallel' fails ⇒ command fails (no fallback when --provider is set)
-```
-
-`surf-ai` ignores `--provider` by design — falling back is the whole point.
+`--provider` still exists, but the only accepted value is `brave`; anything else
+is a usage error naming that fact.
 
 ---
 
 ## Onboarding
 
-`surf-research-agent-skill` needs an API key. (For free, no-key search, use the
-separate **`surf-free-agent-skill`** — no setup at all.)
+`surf-research-agent-skill` requires a **Brave Search key**. There is no free
+tier and no keyless mode — get one at
+[api-dashboard.search.brave.com](https://api-dashboard.search.brave.com).
+
+**Both validations are free.** Brave rejects a `q`-less request before billing
+it, and OpenRouter exposes free key introspection. Nothing below costs a credit.
 
 ```bash
-# 1. Wizard (recommended in a TTY) — prompts Tavily, Parallel, Brave, OpenRouter
+# 1. Wizard (recommended in a TTY) — prompts Brave, then OpenRouter
 surf-research-skill setup
 surf                                   # same thing, with a menu
 
-# 2. surf-ai's LLM key on its own (validation is FREE — key introspection,
-#    zero tokens, zero credits)
+# 2. surf-ai's LLM key on its own
 surf-research-skill ai-setup
 surf-research-skill ai-setup --key sk-or-v1-...     # non-interactive
 surf ai-key
 
 # 3. Direct — many keys per provider in one call (each live-validated)
-surf-research-skill keys add --provider tavily tvly-AAA tvly-BBB tvly-CCC
+surf-research-skill keys add --provider brave BSA-AAA BSA-BBB BSA-CCC
 surf-research-skill keys add --provider openrouter sk-or-v1-AAA sk-or-v1-BBB
-cat parallel-keys.txt | surf-research-skill keys add --provider parallel --stdin
+cat brave-keys.txt | surf-research-skill keys add --provider brave --stdin
 
-# 4. Auto-launch in a TTY: run any command without keys
+# 4. Any command without a valid key
 surf-research-skill search "test"
-# → in a TTY with no search keys: launches the setup wizard
-# (the surf-ai commands never hijack your run this way — they degrade instead)
-
-# Free, no-key search (separate skill, zero setup):
-surf-free-skill "your query"
+# → in a TTY: the gate error, then the wizard, then your command resumes
+# → otherwise: the gate error and exit 78
 
 # 5. Environment / library mode
-TAVILY_API_KEY=tvly-... node -e "import('surf-agent-skill').then(m => m.search('x'))"
+BRAVE_API_KEY=BSA-... node -e "import('surf-agent-skill').then(m => m.search('x'))"
+export BRAVE_API_KEYS=BSA-a,BSA-b        # rotated, and each carries its own rate budget
 export OPENROUTER_API_KEY=sk-or-v1-...   # picked up by surf-ai, never persisted
 export OPENROUTER_API_KEYS=sk-a,sk-b     # …and rotated like any other key list
 ```
@@ -726,10 +824,10 @@ Inspect what was stored (keys are masked):
 ```bash
 surf-research-skill keys list
 # **Surf keys** (config: ~/.config/surf/keys.json)
-# last_ok_provider: `tavily`
-# ## tavily (2 keys)
-# - [0] tvly-…ab12  *(current)*
-# - [1] tvly-…cd34
+# last_ok_provider: `brave`
+# ## brave (2 keys)
+# - [0] BSA-…ab12  *(current, validated 2026-08-29)*
+# - [1] BSA-…cd34
 # ## openrouter (1 key)
 # - [0] sk-or…9f2c  *(current)*
 
@@ -757,9 +855,26 @@ analyzed. Run `surf-research-skill ai-setup`, or check
 are usable but less targeted. Re-run if precision matters.
 
 **`❌ No sources retrieved`** (exit 1)
-→ Every search failed, keyed *and* keyless. The report lists what was tried
-and why. Usually: all search keys burned (`keys list` → `keys reset`), or the
-harness killed the calls (raise the timeout, see above).
+→ Every Brave search failed. The report lists what was tried and why. Usually
+the harness killed the calls (raise the timeout, see above) or the key ran out
+of monthly quota. Note this is *not* the missing-key case: that exits **78**
+before any search runs.
+
+**`❌ Error [BraveKeyMissing|BraveKeyBurned|BraveKeyCooling|BraveKeyInvalid]`** (exit **78**)
+→ The gate. There is no usable Brave key, so nothing ran. The message names the
+exact fix. 78 is `EX_CONFIG` — distinct from 1 and 2 precisely so an
+orchestrating agent knows that retrying is pointless.
+- `BraveKeyMissing` → `surf-research-skill keys add --provider brave <key>`
+- `BraveKeyBurned` → `surf-research-skill keys reset --provider brave`
+  (burns also clear on the 1st of the month)
+- `BraveKeyCooling` → wait out the rate-limit cooldown, or add a second key
+- `BraveKeyInvalid` → the key was rejected by Brave; replace it
+
+**`--sub-agents 10` but the wave takes ten seconds**
+→ That is the rate limiter, not a hang. Your Brave plan allows fewer requests
+per second than you asked for, so surf queues them rather than collecting 429s.
+It warns when this happens. Adding a second Brave key is the only real fix —
+each key carries its own per-second budget.
 
 **Answer looks generic / doesn't address my situation**
 → You didn't pass the brief. `--task`, `--goal` and `--insights` are what turn
@@ -771,19 +886,21 @@ explicit long timeout (Claude Code: `timeout: 600000`), run
 `surf-research-skill project-config`, or use `surf-search-normal`.
 
 **Cost is higher than expected**
-→ The footer prints the real spend. Reduce `--max-rounds`, `--max-queries`, or
+→ The footer prints the real spend. Reduce `--max-rounds`, `--sub-agents`, or
 pass `--ai-model deepseek/deepseek-v4-flash-0731` (same 1M context, roughly a
 third of the price).
 
 ### Search / keys
 
-**`❌ Error [NoProviderAvailable]: operation 'X' requires one of [...]`**
-→ The op needs a key for a provider you haven't configured. In a TTY the
-error already suggests `surf-research-skill setup`. Outside TTY, run
-`surf-research-skill keys add --provider <name> <key>`.
+**`❌ Error: 'crawl' was removed in v8.0.0…`** (exit 2)
+→ `extract`, `crawl`, `map`, `research`, `research-start`, `research-poll` and
+`usage` are gone; Brave has no equivalent. Use `search` and follow the URLs.
 
-**`❌ Error [AllProvidersExhausted]: ...`**
-→ Every key on every eligible provider failed. Check `surf-research-skill keys list`
+**`❌ Error [UnknownProvider]: --provider 'tavily' does not exist in surf v8`**
+→ Brave is the only provider. Drop the flag.
+
+**`❌ Error [AllKeysExhausted]: ...`**
+→ Every Brave key failed. Check `surf-research-skill keys list`
 — if everything is `burned`, you've either rotated keys mid-billing-cycle
 or the providers are down. Run `surf-research-skill keys reset` to retry.
 
@@ -816,7 +933,7 @@ research-poll <id>`. Sync research is capped at 50 s on purpose.
 
 ```text
 .
-├── package.json                       ← name: surf-agent-skill (npm), version 7.0.0, 6 bins
+├── package.json                       ← name: surf-agent-skill (npm), version 8.0.0, 5 bins
 ├── README.md           ← you're here
 ├── CHANGELOG.md
 ├── LICENSE
@@ -824,32 +941,31 @@ research-poll <id>`. Sync research is capped at 50 s on purpose.
 ├── SKILL.md                           ← surf-research-agent-skill / surf-ai (root of pkg)
 ├── bin/
 │   ├── surf.mjs                       ← interactive setup + key validation
-│   ├── surf-search-normal.mjs         ← surf-ai, ONE round (fits the bash timeout)
-│   ├── surf-search-unlimit.mjs        ← surf-ai, rounds until resolved
-│   ├── surf-research-skill.mjs        ← multi-provider web research CLI + `ai` subcommands
-│   ├── surf-free-skill.mjs            ← keyless search CLI
+│   ├── surf-search-normal.mjs         ← surf-ai, ONE wave (fits the bash timeout)
+│   ├── surf-search-unlimit.mjs        ← surf-ai, waves until resolved
+│   ├── surf-research-skill.mjs        ← Brave web search CLI + `ai` subcommands
 │   └── surf-plan-skill.mjs            ← planning workflow CLI
 ├── references/                        ← read on demand by the research orchestrator
 │   ├── burst-templates.md             ← the 8 sub-agent prompt templates (T1–T8)
 │   ├── surf-ai-cli.md                 ← CLI reference for writing delegation prompts
 │   ├── failure-modes.md               ← the 10 degradation cases
-│   ├── COSTS.md
-│   ├── parallel-api.md
-│   ├── tavily-api.md
+│   ├── COSTS.md                       ← what a search costs, and the rate limit that really binds
+│   ├── brave-api.md                   ← what Brave returns, what it doesn't, and every gotcha
 │   └── plan-workflow.md               ← deeper docs on the planning workflow (Normal + Deep ambiguity-sweep mode)
 ├── skills/
-│   ├── surf-plan-agent-skill/SKILL.md       ← planning (auto-routes to an ambiguity-sweep mode)
-│   └── surf-free-agent-skill/SKILL.md       ← free keyless search
+│   └── surf-plan-agent-skill/SKILL.md       ← planning (auto-routes to an ambiguity-sweep mode)
 ├── test/
-│   └── smoke.mjs                      ← offline suite: stubs fetch, temp HOME, 95 assertions
+│   ├── smoke.mjs                      ← offline suite: stubs fetch, temp HOME
+│   └── brave.mjs                      ← adapter, flags, frontier, key gate — regression tests for every v7 defect
 ├── src/
-│   ├── index.mjs                      ← library entry (search/extract/research/...)
+│   ├── index.mjs                      ← library entry (search / searchParallel)
 │   ├── env.mjs                        ← key discovery (opts > env > .env > config)
 │   ├── plan/                          ← plan-file, plans-dir, slug (planning lib)
 │   ├── validators/                    ← per-provider key validators (live API)
 │   ├── lib/
 │   │   ├── ai/                        ← surf-ai — the whole research loop
-│   │   │   ├── orchestrator.mjs       ← plan → search → analyze → loop → synthesize
+│   │   │   ├── orchestrator.mjs       ← plan → wave → analyze → deepen → synthesize
+│   │   │   ├── frontier.mjs           ← the deepening tree: priority, depth, branch closure
 │   │   │   ├── openrouter.mjs         ← LLM client: model chain, key rotation,
 │   │   │   │                            schema downgrade, loose JSON parsing
 │   │   │   ├── prompts.mjs            ← the 3 stage prompts + strict JSON schemas
@@ -858,26 +974,25 @@ research-poll <id>`. Sync research is capped at 50 s on purpose.
 │   │   │   ├── render.mjs             ← markdown / JSON output
 │   │   │   ├── cli.mjs                ← shared command impl for all 3 entry points
 │   │   │   └── setup.mjs              ← `ai-setup` OpenRouter key wizard
-│   │   ├── state.mjs                  ← ~/.config/surf/keys.json I/O (4 providers)
+│   │   ├── state.mjs                  ← ~/.config/surf/keys.json I/O (brave + openrouter)
+│   │   ├── preflight.mjs              ← THE GATE: valid Brave key, or exit 78
+│   │   ├── ratelimit.mjs              ← cross-process token bucket, learned from Brave's headers
+│   │   ├── html.mjs                   ← strip Brave's <strong> markup + entities
 │   │   ├── cache.mjs                  ← TTL response cache
 │   │   ├── audit.mjs                  ← audit + usage JSONL
 │   │   ├── flags.mjs, cost.mjs, format.mjs
-│   │   ├── dispatch.mjs               ← provider/key fallback + self-budget (+ --no-budget)
+│   │   ├── dispatch.mjs               ← key rotation, retries, the gate, self-budget
 │   │   ├── pool.mjs                   ← bounded-concurrency worker pool
 │   │   ├── keys-cmd.mjs               ← surf-research-skill keys add/remove/...
 │   │   ├── setup.mjs                  ← interactive onboarding (with validation)
 │   │   ├── project-config.mjs         ← surf-research-skill project-config
 │   │   ├── progress.mjs               ← stderr progress events
-│   │   ├── check-surf-agent-skill.mjs       ← detect companion CLI in PATH
-│   │   ├── harness-install.mjs        ← cross-OS symlink install for 3 skills
-│   │   ├── api/                       ← library search/extract/crawl/map/research
+│   │   ├── check-surf-skill.mjs       ← detect companion CLI in PATH
+│   │   ├── harness-install.mjs        ← cross-OS symlink install for 2 skills
+│   │   ├── api/                       ← library search / searchParallel
 │   │   └── providers/
-│   │       ├── index.mjs              ← capability map (search + 3 providers)
-│   │       ├── tavily.mjs
-│   │       ├── parallel.mjs
-│   │       ├── brave.mjs
-│   │       ├── wikipedia.mjs          ← keyless
-│   │       └── ddg.mjs                ← keyless
+│   │       ├── index.mjs              ← capability map: search → [brave]. That's it.
+│   │       └── brave.mjs              ← the only search adapter
 │   └── install/
 │       ├── postinstall.mjs            ← cross-OS symlinks + skeleton keys.json
 │       └── preuninstall.mjs           ← cleanup our symlinks
@@ -891,8 +1006,8 @@ research-poll <id>`. Sync research is capped at 50 s on purpose.
   placeholders.
 - **Keys are only ever persisted to `~/.config/surf/keys.json`** (chmod 600).
   Nothing else on disk ever holds one.
-- **CLI mode** reads search-provider keys (Tavily / Parallel / Brave) from that
-  file and from nowhere else — not from the environment, not from `.env`. The
+- **CLI mode** reads the Brave key from that file and from nowhere else — not
+  from the environment, not from `.env`. The
   **OpenRouter** key is the one exception: `OPENROUTER_API_KEY` /
   `OPENROUTER_API_KEYS` are also accepted so surf-ai works on machines that
   already export one. Env-sourced keys are used **in memory only** and are
@@ -901,7 +1016,7 @@ research-poll <id>`. Sync research is capped at 50 s on purpose.
 - **Library mode is different by design.** `discoverKeys()` (`src/env.mjs`),
   which every `import { search, … } from 'surf-agent-skill'` call goes through,
   resolves keys for *all* providers in this order: explicit options →
-  `process.env` (`TAVILY_API_KEY(S)`, `PARALLEL_*`, `BRAVE_*`, `OPENROUTER_*`)
+  `process.env` (`BRAVE_API_KEY(S)`, `OPENROUTER_*`)
   → a `.env` in the current working directory → `keys.json` as a last resort.
   That is what makes it usable from serverless and CI. Pass
   `skipDotenv: true` / `skipConfigFile: true` to switch those levels off.

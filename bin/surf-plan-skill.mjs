@@ -9,7 +9,7 @@ import { listPlans, readPlan, newPlanStub } from '../src/plan/plan-file.mjs';
 import { slugify } from '../src/plan/slug.mjs';
 import { checkSurfSkill } from '../src/lib/check-surf-skill.mjs';
 
-const VERSION = '7.0.0';
+const VERSION = '8.0.0';
 
 const HELP = `surf-plan-skill — research-grounded execution planning skill
 
@@ -126,11 +126,12 @@ async function cmdDoctor() {
     out(`\nsurf-research-skill: ✓ installed (${surf.version})`);
     if (surf.keyCounts) {
       const k = surf.keyCounts;
-      const total = (k.tavily || 0) + (k.parallel || 0) + (k.brave || 0);
-      out(`  keys:          ${total} total — tavily ${k.tavily}, parallel ${k.parallel}, brave ${k.brave}`);
-      if (total === 0) {
-        out(`\n⚠ surf-research-skill has no keys. Run: surf-research-skill setup`);
-        process.exitCode = 2;
+      out(`  brave keys:    ${k.brave} configured, ${k.braveUsable} usable`);
+      if (k.braveUsable === 0) {
+        out(k.brave === 0
+          ? `\n⚠ No Brave key. Every research command exits 78. Run: surf-research-skill setup`
+          : `\n⚠ Every Brave key is burned. Run: surf-research-skill keys reset --provider brave`);
+        process.exitCode = 78;
       }
     }
   } else {

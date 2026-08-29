@@ -47,8 +47,8 @@ proposed. See "Deep mode" below.
 
 | Layer | Mechanism | When |
 |---|---|---|
-| A | `surf-research-skill` CLI via Bash | Default. Multi-provider, key rotation, batching, parallel fan-out. |
-| A-manual | raw `surf-research-skill search/extract/crawl/map` via Bash | When `surf-ai` is unavailable or you need raw results without synthesis. |
+| A | `surf-research-skill` CLI via Bash | Default. Brave Search, key rotation, batching, rate-paced parallel fan-out. |
+| A-manual | raw `surf-research-skill search` / `search-parallel` via Bash | When `surf-ai` is unavailable or you need raw results without synthesis. |
 | B | Harness-native `WebSearch` / `WebFetch` | Bash unavailable, denied, or blocked by mode (plan mode); CLI missing or all keys burned. |
 | C | None | Halt: user explicitly chooses between aborting and an "NOT WEB-RESEARCHED"-labeled plan. |
 
@@ -159,7 +159,7 @@ the same 3 queries as parallel WebSearch calls (Layer B). Distill:
 - 2–3 common mistakes
 - 1–2 security/performance gotchas
 
-Cost (Layer A): ~6 credits (Tavily) + ~10 s. Acceptable for any non-trivial
+Cost (Layer A): ~6 Brave requests (~3¢) + ~10 s. Acceptable for any non-trivial
 plan.
 
 ### Open the conversation
@@ -219,7 +219,8 @@ Why: every clarifying option presented to the user must be a real,
 found approach — never invented.
 
 How: for each ambiguity with an externally-verifiable answer, fan out
-parallel research (one query per unknown × angle) via `search-parallel`.
+parallel research (one query per unknown × angle) via `search-parallel`
+(`--sub-agents=N`, paced to your Brave plan).
 See surf-research-agent-skill's fan-out protocol (ledger, dedup, gate) — this
 reuses it directly rather than duplicating it.
 
@@ -262,11 +263,12 @@ A typical **Normal** plan uses (Layer A):
 - 3–5 targeted (clarify): 1 query each, ~5 credits, ~3 s each
 - 1 batch (synthesis): 2–3 queries, ~5 credits, ~8 s
 
-Total: ~15–20 credits, ~30 s of network time. On Tavily's free tier (1k
-credits/month), that's ~50 plans per month for free.
+Total: ~15–20 Brave requests, ~30 s of network time (more on a 1 req/s plan,
+where surf paces the fan-out). At $5/1,000 requests that is under 10¢ a plan;
+on a legacy 2,000/month key, ~100 plans.
 
 A typical **Deep** plan adds the grounding fan-out on top: roughly 1 query
-per Register item, run concurrently via `search-parallel` rather than
+per Register item, run concurrently via `search-parallel` (`--sub-agents=N`) rather than
 sequentially, so wall-clock cost stays low even though credit cost is
 higher (proportional to the number of real ambiguities found — this mode
 is reserved for when that cost is worth paying). Layer B costs nothing from

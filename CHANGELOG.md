@@ -2,6 +2,199 @@
 
 > **Historical entries (v1.0.0 – v4.1.0)** have been archived to [CHANGELOG-archive.md](CHANGELOG-archive.md).
 
+## 8.0.0 — Brave only, and it says so when it cannot
+
+**Breaking.** surf now searches with Brave and nothing else. If it cannot
+identify a valid Brave key it stops with **exit 78** before doing any work,
+instead of quietly answering from somewhere cheaper.
+
+### Why
+
+v7 fanned out across Tavily, Parallel and Brave, and when every paid key was
+exhausted `surf-ai` dropped to a free Wikipedia/DuckDuckGo tier and returned a
+confident, cited-looking answer at exit 0. Nothing in the output distinguished
+that from a real research answer. The providers were kept apart by comments
+rather than by structure, and the comments did not hold.
+
+### Removed
+
+- **Tavily, Parallel, Wikipedia and DuckDuckGo adapters.** Deleted, not
+  disabled. There is now no code path that can answer a search without a Brave
+  key, which is what makes the hard stop unfakeable.
+- **`surf-free-skill` and `surf-free-agent-skill`.** The keyless product is
+  gone, and its symlink is removed from every harness dir on upgrade.
+- **`extract`, `crawl`, `map`, `research`, `research-start`, `research-poll`,
+  `usage`.** Brave's `/web/search` returns ranked links and snippets, never page
+  content, and has no crawl, site-map or async-research endpoint. These verbs
+  had no honest implementation, so they exit 2 with an explanation rather than
+  an "unknown command". The library exports throw `RemovedInV8` instead of
+  vanishing, so a downstream import does not become a `SyntaxError`.
+- `--provider` now accepts only `brave`; `--no-fallback` is gone (nothing to
+  fall back from).
+
+**Your Tavily and Parallel keys are not destroyed.** On first run they are
+copied to `~/.config/surf/keys.legacy-<date>.json` (chmod 600) and a warning
+names the file.
+
+### The key gate (`src/lib/preflight.mjs`)
+
+Every bin, and `dispatch()` itself, resolves the gate before doing work:
+
+| Verdict | Code | Fix |
+|---|---|---|
+| no key anywhere | `BraveKeyMissing` | `keys add --provider brave <key>` |
+| every key burned | `BraveKeyBurned` | `keys reset --provider brave` |
+| every key rate-limited | `BraveKeyCooling` | wait, or add a second key |
+| the key was rejected | `BraveKeyInvalid` | replace it |
+
+All four exit **78** (`EX_CONFIG`) — deliberately distinct from 1 (the
+operation ran and failed) and 2 (bad usage), so an orchestrating agent can tell
+"your configuration is broken" from "the search failed" without parsing prose.
+
+**Validation is free**, which is what makes a per-invocation gate affordable: a
+Brave request with no `q` is rejected before it is billed, and a good key and a
+bad key are told apart by `error.code`, not by HTTP status. Verified with an A/B
+of 108 deliberately-failing requests — monthly quota moved by zero. The verdict
+is cached in `keys.json` (`validated`, TTL 7 days) so the common path is offline.
+
+### Fixed — the search modes
+
+- **A non-numeric `--max` no longer burns every key.** `clamp(NaN,1,20)` is
+  `NaN`, and `NaN` reached the wire as the literal string `count=NaN`, which
+  Brave answers with 422 — which v7 classified as `auth` and used to burn each
+  key in turn, permanently. Numeric inputs are now floored, clamped and
+  finite-checked, and non-finite values can no longer be serialised at all.
+- **422 is no longer read as "bad key".** Brave answers an invalid token *and*
+  an invalid parameter with 422. They are now told apart by `error.code`:
+  `SUBSCRIPTION_TOKEN_INVALID` burns the key; `VALIDATION` is a caller error;
+  `OPTION_NOT_IN_PLAN` (HTTP 400) is a plan limitation. Note the trap that made
+  this subtle: `OPTION_NOT_IN_PLAN` also carries
+  `meta.component: "authentication"`, so branching on that field would burn a
+  perfectly good key.
+- **`--search-mode` now actually changes the request.** In the surf-ai path a
+  defaulted `max` was always present and always won, so `fast`, `normal` and
+  `slow` produced byte-identical Brave calls. `max` is now sent only when the
+  user actually asked for a result count.
+- **No more phantom `depth: 'advanced'` default.** With no `--mode`, v7 silently
+  ran every search at the widest tier while `--help` promised `normal`.
+- **`--time`, `--start-date`/`--end-date`, `--domains`, `--exclude` and
+  `--topic` reach Brave.** They were accepted at the CLI and silently discarded
+  by the adapter. `--time` maps to `freshness`, a date range to Brave's
+  `YYYY-MM-DDtoYYYY-MM-DD` form, and domains to `site:` operators — OR-grouped,
+  because `site:a site:b` is ANDed by Brave and returns nothing.
+- **Typos are rejected instead of silently degrading.** `--mode`, `--depth`,
+  `--topic`, `--time`, `--safesearch` and `--country` are validated before the
+  request. Every unknown argument now produces a warning naming it.
+- **`--flag=value` parses.** `--sub-agents=10 "my question"` used to produce the
+  flag key `"sub-agents=10"` *and* swallow the question. A valued flag with no
+  value is now a usage error rather than boolean `true` — which used to read as
+  `Number(true) === 1` and collapse a whole fan-out to one worker.
+- **`--mode fast` on `surf-search-normal` is no longer discarded.** Those bins
+  fix the run mode, so the validation guard never fired; the tier flag is now
+  aliased through with a note, and a contradicting value is an error.
+
+### Fixed — quality of what Brave returns
+
+- `text_decorations=0`: Brave wraps every query-term match in `<strong>`, and
+  that markup was piped verbatim into markdown output and into LLM prompts.
+- `extra_snippets`: up to five more excerpts per result, appended to the
+  content. Plan-gated, and **silently absent** when unavailable — treated as a
+  plan signal, never an error.
+- `published_date` is now `page_age` (ISO-8601). v7 used `age`, a display string
+  like "2 days ago", feeding a prompt that explicitly demands date rigour. The
+  human string survives as `age_text` for human-facing output only.
+- The dead `answer` field is gone. It read `data.summarizer.summary` from a
+  plain `/web/search` response, where the summarizer block never appears.
+- `more_results_available` is surfaced, and an **absent** value reads as false —
+  Brave omits the field when results are exhausted rather than setting it false.
+
+### Added — rate limiting (`src/lib/ratelimit.mjs`)
+
+Brave enforces a 1-second sliding window counted **on arrival**, with no
+`Retry-After` header. The allowance is per plan and varies by two orders of
+magnitude: the 2026 Search plan is 50 req/s, a grandfathered key is **1**.
+
+surf now **learns** the real limit from `x-ratelimit-policy` (and from the 429
+body, which carries the whole plan inline) and paces requests through a token
+bucket held **on disk** — because the sub-agents of `surf-research-agent-skill`
+are separate OS processes, and an in-process semaphore would let ten of them
+each fire N requests in the same second.
+
+Asking for more simultaneity than the plan serves does not fail; it queues, and
+surf warns with the arithmetic. Adding a second Brave key is the real fix —
+each key carries its own per-second budget.
+
+### Added — the deepening algorithm (`src/lib/ai/frontier.mjs`)
+
+v7's loop was flat: plan N queries, run them, ask for N more. Nothing recorded
+why a query existed or what it descended from, so depth was indistinguishable
+from repetition.
+
+v8 runs a **priority frontier over a tree**. Every query is a node with a
+parent, a depth and a kind (`breadth` / `depth` / `verify`), so the loop can
+reason about a branch instead of a list:
+
+- a **per-branch quota**, so one hot sub-question cannot consume a whole wave;
+- a **verification reserve**, so falsifying a contested claim outranks widening;
+- **deterministic admission** — duplicates, over-deep nodes and closed branches
+  are rejected in plain code, and every rejection is *recorded*, because a
+  forgotten rejection gets re-proposed every round and the loop never converges;
+- **automatic branch closure** after two waves with no new sources;
+- dedup that keeps version numbers distinct, so "gpt 4 pricing" and
+  "gpt 5 pricing" are not collapsed into one query.
+
+`--ledger` prints the coverage table with depth and parent columns, plus every
+candidate the frontier refused and why.
+
+### Added — `--sub-agents N` (default 10, max 20)
+
+One number for simultaneity, at both levels:
+
+- in the CLI it is the wave width **and** the worker-pool width, so the two can
+  never multiply;
+- in `surf-research-agent-skill` it is the burst size, and a firing orchestrator
+  passes `--sub-agents=max(1, floor(N / burst size))` to each sub-agent so the
+  two layers **add** instead of multiplying (10 sub-agents × the old default of
+  8 would have been 80 concurrent requests).
+
+`--sub-agents=N` and `--sub-agents N` both work. `--concurrency` remains as a
+deprecated alias that loses to `--sub-agents`.
+
+### Other
+
+- `keys list` shows the validation verdict per key. `keys reset` also clears
+  failed verdicts and cooldowns, so a reset really does re-test the key.
+- `keys remove` re-indexes `cooldowns` and `validated` alongside `burned`;
+  leaving them unshifted attributed one key's verdict to another.
+- `buildInMemoryState` carries burn/cooldown/validation state over from
+  `keys.json`, matching on key **value** rather than index. Library callers used
+  to re-use keys the CLI had already proved dead.
+- `NoProviderAvailable` no longer prescribes `keys add` when the real fix is
+  `keys reset`; one `explainUnusable()` now drives every message.
+- `surf doctor` asks the gate instead of counting keys. It used to report
+  "brave 1 key(s), 1 burned" and exit 0 — the exact state in which every command
+  fails.
+- New `references/brave-api.md`; `references/tavily-api.md` and
+  `references/parallel-api.md` deleted; `references/COSTS.md` rewritten around
+  requests-per-second rather than credits.
+- `SKILL.md` closed `</orchestrator>` twice, so the XML handed to the model was
+  malformed. Fixed.
+- New `test/brave.mjs` — 137 assertions covering the adapter, the flag parser,
+  the frontier and the gate. Every one corresponds to a defect that was live in
+  v7. `test/smoke.mjs` now stubs Brave (GET + query params) instead of Tavily
+  (POST + JSON body).
+
+### Upgrading
+
+1. `npm i -g surf-agent-skill@8`
+2. `surf-research-skill keys add --provider brave <key>` (or `surf`)
+3. Replace `--concurrency N` with `--sub-agents=N`.
+4. Replace any use of `extract`/`crawl`/`map`/`research*` with `search` plus
+   your own fetch.
+5. Expect **78**, not 1, when the key is the problem.
+
+---
+
 ## v7.0.0 — documentação alinhada, débitos resolvidos
 
 ### Changed

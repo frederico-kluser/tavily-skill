@@ -1,12 +1,13 @@
 {
 "name": "surf-agent-skill",
-  "version": "7.0.0",
-  "description": "Autonomous web research for AI coding agents. surf-ai runs the entire loop inside the CLI — an LLM (DeepSeek v4 Pro via OpenRouter) plans the queries, they all run concurrently across Tavily + Parallel + Brave with automatic key rotation and provider fallback, the LLM analyzes what is still open, launches more searches, and writes the final cited answer in the shape the calling agent asked for. Two modes: surf-search-normal (one round, fitted inside the agent's bash timeout) and surf-search-unlimit (as many rounds as the question needs). Also ships surf-plan-agent-skill (research-driven execution planning) and surf-free-agent-skill (free keyless search via Wikipedia + DuckDuckGo), plus `surf` interactive setup with live key validation and a Node library.",
+  "version": "8.0.0",
+  "description": "Autonomous web research for AI coding agents, on Brave Search and nothing else. The CLI runs the whole loop: an LLM (DeepSeek v4 Pro via OpenRouter) plans the queries, up to --sub-agents of them run at once against Brave — paced to your plan's real rate limit — and follow-ups enter a priority frontier as tree nodes that know their parent and depth, so later waves descend into the thin branches instead of re-searching wide. Two modes: surf-search-normal (one wave, fitted inside the agent's bash timeout) and surf-search-unlimit (as many waves as the question needs). No valid Brave key means exit 78 before anything runs — it never quietly answers from somewhere else. Also ships surf-plan-agent-skill (research-driven execution planning), `surf` interactive setup with free live key validation, and a Node library.",
   "type": "module",
   "main": "./src/index.mjs",
   "exports": {
     ".": "./src/index.mjs",
     "./ai": "./src/lib/ai/orchestrator.mjs",
+    "./preflight": "./src/lib/preflight.mjs",
     "./plan": "./src/plan/plan-file.mjs",
     "./validators": "./src/validators/index.mjs",
     "./package.json": "./package.json"
@@ -16,8 +17,7 @@
     "surf-research-skill": "./bin/surf-research-skill.mjs",
     "surf-search-normal": "./bin/surf-search-normal.mjs",
     "surf-search-unlimit": "./bin/surf-search-unlimit.mjs",
-    "surf-plan-skill": "./bin/surf-plan-skill.mjs",
-    "surf-free-skill": "./bin/surf-free-skill.mjs"
+    "surf-plan-skill": "./bin/surf-plan-skill.mjs"
   },
   "files": [
     "bin/",
@@ -40,8 +40,6 @@
     "dev:search": "node ./bin/surf-research-skill.mjs",
     "predev:plan": "npm run build",
     "dev:plan": "node ./bin/surf-plan-skill.mjs",
-    "predev:free": "npm run build",
-    "dev:free": "node ./bin/surf-free-skill.mjs",
     "predev:ai": "npm run build",
     "dev:ai": "node ./bin/surf-search-normal.mjs",
     "predev:ai-unlimit": "npm run build",
@@ -49,7 +47,7 @@
     "predev:install": "npm run build",
     "dev:install": "SURF_DEV=1 node ./src/install/postinstall.mjs",
     "dev:uninstall": "SURF_DEV=1 node ./src/install/preuninstall.mjs",
-    "test": "npm run test:syntax && node ./test/smoke.mjs",
+    "test": "npm run test:syntax && node ./test/smoke.mjs && node ./test/brave.mjs",
     "test:syntax": "for f in bin/*.mjs src/index.mjs src/env.mjs src/install/*.mjs src/lib/*.mjs src/lib/ai/*.mjs src/lib/providers/*.mjs src/lib/api/*.mjs src/plan/*.mjs src/validators/*.mjs; do node --check \"$f\" || exit 1; done && echo syntax-ok"
   },
   "engines": {
@@ -57,11 +55,12 @@
   },
   "keywords": [
     "agent-skill",
-    "tavily",
-    "parallel-ai",
     "brave-search",
+    "brave-search-api",
     "web-search",
-    "connector",
+    "deep-research",
+    "subagents",
+    "rate-limiting",
     "planning",
     "spec-driven",
     "research-driven",
@@ -70,8 +69,6 @@
     "copilot-cli",
     "pi-coding-agent",
     "anthropic-skill",
-    "fallback",
-    "multi-provider",
     "research"
   ],
   "repository": {

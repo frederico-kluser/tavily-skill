@@ -71,6 +71,7 @@ export class Ledger {
     });
     this.rows.push({
       round, id: item.id, sub: item.sub, category: item.category || null,
+      parent: item.parent || null, depth: item.depth ?? 0, kind: item.kind || 'breadth',
       query: item.q, ok: true,
       provider: envelope.provider,
       latency_ms: envelope.latency_ms,
@@ -85,6 +86,7 @@ export class Ledger {
   addFailure(round, item, error) {
     this.rows.push({
       round, id: item.id, sub: item.sub, category: item.category || null,
+      parent: item.parent || null, depth: item.depth ?? 0, kind: item.kind || 'breadth',
       query: item.q, ok: false,
       error: {
         code: (error && (error.code || error.name)) || 'Error',
@@ -110,6 +112,19 @@ export class Ledger {
     };
     this.sourceIndex.set(url, entry);
     return entry;
+  }
+
+  /** Canonical sources first seen in this round — the saturation signal. */
+  newSourcesInRound(round) {
+    const earlier = new Set();
+    let count = 0;
+    for (const row of this.rows) {
+      for (const r of row.results || []) {
+        if (row.round < round) earlier.add(r.url);
+        else if (row.round === round && !earlier.has(r.url)) { earlier.add(r.url); count++; }
+      }
+    }
+    return count;
   }
 
   get okRows() { return this.rows.filter(r => r.ok); }
@@ -155,9 +170,10 @@ export class Ledger {
 
     const rows = this.rows.filter(r => r.round >= sinceRound);
     for (const row of rows) {
+      const lineage = `depth ${row.depth ?? 0}${row.parent ? ` · follows [${row.parent}]` : ''} · ${row.kind || 'breadth'}`;
       const head = row.ok
-        ? `### [${row.id}] ${row.query}\n(sub: ${row.sub || '—'} · category: ${row.category || '—'} · provider: ${row.provider} · round ${row.round})`
-        : `### [${row.id}] ${row.query}\n(sub: ${row.sub || '—'} · round ${row.round}) — SEARCH FAILED: ${row.error.code}: ${row.error.message}`;
+        ? `### [${row.id}] ${row.query}\n(sub: ${row.sub || '—'} · ${lineage} · category: ${row.category || '—'} · wave ${row.round})`
+        : `### [${row.id}] ${row.query}\n(sub: ${row.sub || '—'} · ${lineage} · wave ${row.round}) — SEARCH FAILED: ${row.error.code}: ${row.error.message}`;
 
       const body = [];
       if (row.answer) body.push(`Provider answer: ${clean(row.answer, 700)}`);
@@ -188,8 +204,8 @@ export class Ledger {
   /** Markdown table of every query — the auditable coverage record. */
   tableMarkdown() {
     const lines = [
-      '| Round | Sub | Query id | Category | Provider | Status | Top source |',
-      '|---|---|---|---|---|---|---|',
+      '| Wave | Depth | Sub | Query id | Kind | Parent | Status | Top source |',
+      '|---|---|---|---|---|---|---|---|',
     ];
     for (const r of this.rows) {
       const top = r.ok && r.results[0]
@@ -197,7 +213,7 @@ export class Ledger {
         : '—';
       const status = r.ok ? `OK (${r.results.length} hits)` : `FAILED: ${r.error.code}`;
       lines.push(
-        `| ${r.round} | ${r.sub || '—'} | ${r.id} | ${r.category || '—'} | ${r.ok ? r.provider : '—'} | ${status} | ${top} |`
+        `| ${r.round} | ${r.depth ?? 0} | ${r.sub || '—'} | ${r.id} | ${r.kind || 'breadth'} | ${r.parent || '—'} | ${status} | ${top} |`
       );
     }
     return lines.join('\n');

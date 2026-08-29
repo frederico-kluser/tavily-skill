@@ -1,37 +1,35 @@
 // Per-provider key validators.
 //
-// Each validator runs a real 1-credit search call against the provider's
-// API using the existing adapter. If the call returns 200, the key is
-// valid; auth/billing errors mark it invalid; other errors are surfaced
-// with their kind so the caller can decide whether to save anyway.
+// Each validator asks the provider's own API whether the key is real, using
+// the cheapest call that provider offers. Auth errors mark the key invalid;
+// other failures are surfaced with their kind so the caller can decide whether
+// to save anyway.
 //
-// Cost per validation:
-//   - Tavily: 1 credit (~$0.001)
-//   - Parallel: ~1 credit (lite tier)
-//   - Brave: ~$0.003 (metered)
+// Cost per validation: ZERO, for both providers.
+//   - Brave:      a request with no `q` is rejected before it is billed. A good
+//                 key and a bad key both answer HTTP 422 and are told apart by
+//                 error.code (VALIDATION vs SUBSCRIPTION_TOKEN_INVALID).
+//   - OpenRouter: GET /api/v1/key is free key introspection.
 //
-// This is a one-time cost per added key. Acceptable trade-off for
-// "saved a working key" vs "saved a dead key and discovered hours later".
+// Because it is free, validation is not a one-off at setup time any more — the
+// preflight gate (src/lib/preflight.mjs) can afford to prove the key on every
+// run, cached for 7 days so it does not spend a rate-limit slot each time.
 
-import { tavilyProvider } from '../lib/providers/tavily.mjs';
-import { parallelProvider } from '../lib/providers/parallel.mjs';
 import { braveProvider } from '../lib/providers/brave.mjs';
 import { validateOpenRouterKey } from '../lib/ai/openrouter.mjs';
 
 const ADAPTERS = {
-  tavily: tavilyProvider,
-  parallel: parallelProvider,
   brave: braveProvider,
 };
 
-const VERSION = '7.0.0';
+const VERSION = '8.0.0';
 const VALIDATION_QUERY = 'surf-agent-skill key validation ping';
 const TIMEOUT_MS = 20_000;
 
 /**
- * Validate a single API key by making a live search call.
+ * Validate a single API key against the provider's API.
  *
- * @param {string} provider  - 'tavily' | 'parallel' | 'brave'
+ * @param {string} provider  - 'brave' | 'openrouter'
  * @param {string} key
  * @returns {Promise<{
  *   valid: boolean,
@@ -57,7 +55,7 @@ export async function validateKey(provider, key) {
       valid: false,
       provider,
       kind: 'unknown_provider',
-      error: `unknown provider: ${provider}. Use: tavily | parallel | brave | openrouter`,
+      error: `unknown provider: ${provider}. Use: brave | openrouter`,
     };
   }
   if (!key || typeof key !== 'string' || key.length < 8) {
@@ -67,6 +65,11 @@ export async function validateKey(provider, key) {
       kind: 'malformed',
       error: 'key is empty or too short',
     };
+  }
+
+  // Adapters that know a free way to prove a key own that logic themselves.
+  if (typeof adapter.validate === 'function') {
+    return adapter.validate(key, { timeout: TIMEOUT_MS, version: VERSION });
   }
 
   const ctx = { key, timeout: TIMEOUT_MS, version: VERSION };
@@ -127,10 +130,14 @@ export function formatValidation(r) {
     return `✓ valid (openrouter, ${bits.join(', ')})`;
   }
   if (r.valid) {
-    return `✓ valid (${r.provider}, HTTP 200, ${r.latency_ms}ms, ${r.credits} credit${r.credits === 1 ? '' : 's'})`;
+    const cost = r.free || r.credits === 0 ? 'free probe, 0 credits' : `${r.credits} credit${r.credits === 1 ? '' : 's'}`;
+    const note = r.throttled ? ', rate-limited but accepted' : '';
+    return `✓ valid (${r.provider}, ${r.latency_ms}ms, ${cost}${note})`;
   }
   const kindMap = {
-    auth:            'invalid key (401/403/422)',
+    auth:            'invalid key (Brave answers 422 SUBSCRIPTION_TOKEN_INVALID)',
+    plan_gate:       'key is valid but your plan lacks this option',
+    config_4xx:      'the request was malformed (the key itself may be fine)',
     rate_limit_429:  'rate limit hit — key likely valid but throttled, try again',
     server_5xx:      "provider's server is down — try again later",
     network:         'network error reaching provider',

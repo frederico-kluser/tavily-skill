@@ -68,16 +68,20 @@ async function main() {
   if (skel.created) process.stdout.write(`✓ created ${skel.created} (chmod 600)\n`);
 
   process.stdout.write('\n');
-process.stdout.write('✓ surf-agent-skill 7.0.0 installed globally — 3 skills + 6 bins:\n');
+process.stdout.write('✓ surf-agent-skill 8.0.0 installed globally — 2 skills + 5 bins:\n');
   process.stdout.write('    surf                  interactive setup with live key validation\n');
-  process.stdout.write('    surf-research-skill   web research: search, parallel fan-out, or async\n');
-  process.stdout.write('                          deep research — auto-routed by the skill itself\n');
+  process.stdout.write('    surf-research-skill   Brave web search: one query, a batch, or a\n');
+  process.stdout.write('                          paced parallel fan-out\n');
+  process.stdout.write('    surf-search-normal    autonomous research, ONE wave\n');
+  process.stdout.write('    surf-search-unlimit   autonomous research, as many waves as needed\n');
   process.stdout.write('    surf-plan-skill       research-grounded execution planning, with an\n');
   process.stdout.write('                          auto-routed ambiguity-sweep mode for high-stakes work\n');
-  process.stdout.write('    surf-free-skill       free, keyless web search (Wikipedia + DuckDuckGo)\n');
-  process.stdout.write('                          — no API key needed\n');
   process.stdout.write('\n');
-  process.stdout.write('  → Next: run `surf` to add keys (each one is live-validated)\n');
+  process.stdout.write('  ⚠ v8 is BRAVE-ONLY. Tavily and Parallel were removed; if you had keys for\n');
+  process.stdout.write('    them they are copied to ~/.config/surf/keys.legacy-<date>.json, not deleted.\n');
+  process.stdout.write('    Without a valid Brave key every research command now exits 78.\n');
+  process.stdout.write('\n');
+  process.stdout.write('  → Next: run `surf` to add your Brave key (validated live, for free)\n');
   process.stdout.write('  → Then ask your AI agent: "make a plan for X" (planning skill kicks in)\n');
   process.stdout.write('         or run: surf-research-skill search "your query"\n');
 }

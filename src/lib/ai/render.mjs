@@ -27,6 +27,25 @@ export function renderMarkdown(result, { ledger: showLedger = false } = {}) {
       parts.push('**Open points recorded by the analyst:**');
       for (const p of result.analysis.open_points) parts.push(`- ${p}`);
     }
+    // What the deepening loop chose NOT to search, and why. A frontier that
+    // silently drops candidates is indistinguishable from one that never had
+    // them, and the difference matters when judging coverage.
+    if (result.frontier) {
+      const f = result.frontier;
+      parts.push('');
+      parts.push(
+        `**Frontier:** ${f.pending} quer${f.pending === 1 ? 'y' : 'ies'} still queued · ` +
+        `${f.closed_branches.length} branch(es) closed · ${f.rejected_total} candidate(s) rejected`
+      );
+      if (f.rejected && f.rejected.length) {
+        parts.push('');
+        parts.push('| Rejected candidate | Why |');
+        parts.push('|---|---|');
+        for (const r of f.rejected.slice(0, 15)) {
+          parts.push(`| ${String(r.q).replace(/\|/g, '\\|')} | ${r.reason} |`);
+        }
+      }
+    }
   }
 
   parts.push('');
@@ -39,7 +58,7 @@ export function renderMarkdown(result, { ledger: showLedger = false } = {}) {
 export function runFooter({ mode, rounds, stats, diagnostics, stop_reason, elapsed_ms }) {
   const bits = [
     `surf-ai \`${mode}\``,
-    `${rounds} round${rounds === 1 ? '' : 's'}`,
+    `${rounds} wave${rounds === 1 ? '' : 's'}`,
     `${stats.queries} quer${stats.queries === 1 ? 'y' : 'ies'} (${stats.failed} failed)`,
     `${stats.sources} source${stats.sources === 1 ? '' : 's'}`,
     `${(elapsed_ms / 1000).toFixed(1)}s`,
@@ -48,7 +67,7 @@ export function runFooter({ mode, rounds, stats, diagnostics, stop_reason, elaps
   if (model) bits.push(`model \`${model}\``);
   const cost = diagnostics.llm_calls.reduce((s, c) => s + (Number(c.cost) || 0), 0);
   if (cost > 0) bits.push(`llm $${cost.toFixed(5)}`);
-  if (stats.credits) bits.push(`${stats.credits} search credits`);
+  if (stats.credits) bits.push(`${stats.credits} Brave request${stats.credits === 1 ? '' : 's'}`);
   let line = `_${bits.join(' · ')}_`;
   if (diagnostics.degraded.length) {
     line += `\n\n> ⚠ Degraded stage${diagnostics.degraded.length === 1 ? '' : 's'}: ` +
@@ -68,6 +87,8 @@ export function renderJson(result) {
     answer: result.answer,
     synthesized: result.synthesized,
     rounds: result.rounds,
+    waves: result.waves ?? result.rounds,
+    frontier: result.frontier || null,
     stop_reason: result.stop_reason,
     plan: result.plan,
     analysis: result.analysis,

@@ -7,9 +7,11 @@
 
 import { readFile, writeFile } from 'node:fs/promises';
 import { stdout, stderr } from 'node:process';
-import { runSurfAi } from './orchestrator.mjs';
+import { runSurfAi, MAX_SUB_AGENTS, DEFAULT_SUB_AGENTS } from './orchestrator.mjs';
 import { renderMarkdown, renderJson } from './render.mjs';
 import { progress } from '../progress.mjs';
+import { assertEnum, numericFlag, FlagError } from '../flags.mjs';
+import { MODES as SEARCH_MODES } from '../providers/brave.mjs';
 
 export class AiCliError extends Error {
   constructor(message) {
@@ -77,16 +79,46 @@ export async function runAiCommand({ pos, flags, mode }) {
     throw new AiCliError(`--mode must be 'normal' or 'unlimit' (got '${flags.mode}')`);
   }
 
+  // `--mode` means the RUN mode here, but the standalone bins fix the run mode
+  // themselves — so on those, `--mode fast|normal|slow` was parsed, ignored, and
+  // silently discarded. Treat it as the tier flag it obviously meant, unless the
+  // user also passed --search-mode, which always wins.
+  let searchMode = flags['search-mode'];
+  if (mode && typeof flags.mode === 'string' && SEARCH_MODES.includes(flags.mode)) {
+    if (!searchMode) {
+      searchMode = flags.mode;
+      progress.info(`surf-ai: read --mode ${flags.mode} as --search-mode (this binary fixes the run mode to '${mode}')`);
+    }
+  } else if (mode && typeof flags.mode === 'string' && flags.mode !== mode) {
+    throw new AiCliError(
+      `--mode '${flags.mode}' contradicts this command, which always runs in '${mode}' mode. ` +
+      `Did you mean --search-mode ${SEARCH_MODES.join('|')}?`,
+    );
+  }
+  assertEnum('--search-mode', searchMode, SEARCH_MODES);
+
+  // One simultaneity budget. --concurrency survives as a deprecated alias.
+  const subAgents = numericFlag(flags['sub-agents'], {
+    name: '--sub-agents', min: 1, max: MAX_SUB_AGENTS, fallback: undefined,
+  });
+  const legacy = numericFlag(flags.concurrency, {
+    name: '--concurrency', min: 1, max: MAX_SUB_AGENTS, fallback: undefined,
+  });
+  if (subAgents === undefined && legacy !== undefined) {
+    progress.warn(`surf-ai: --concurrency is deprecated; use --sub-agents=${legacy} (same meaning, default ${DEFAULT_SUB_AGENTS}).`);
+  }
+
   const ctx = await buildBrief(pos, flags);
 
   const result = await runSurfAi(ctx, {
     mode: resolvedMode,
-    concurrency: flags.concurrency,
-    maxRounds: flags['max-rounds'],
-    maxQueries: flags['max-queries'],
-    max: flags.max,
+    subAgents: subAgents ?? legacy,
+    maxRounds: numericFlag(flags['max-rounds'], { name: '--max-rounds', min: 1, max: 50, fallback: undefined }),
+    maxQueries: numericFlag(flags['max-queries'], { name: '--max-queries', min: 1, max: 40, fallback: undefined }),
+    maxDepth: numericFlag(flags['max-depth'], { name: '--max-depth', min: 1, max: 6, fallback: undefined }),
+    max: numericFlag(flags.max, { name: '--max', min: 1, max: 20, fallback: undefined }),
     aiModel: flags['ai-model'],
-    searchMode: flags['search-mode'],
+    searchMode,
     budgetMs: flags['budget-ms'],
     flags,
   });
@@ -113,6 +145,17 @@ export async function runAiCommand({ pos, flags, mode }) {
 
 /** Uniform error printer for the two standalone bins. */
 export function reportAiError(e) {
+  // A configuration problem is not a failed operation. Exit 78 (EX_CONFIG) so
+  // an orchestrating agent can tell "fix your setup" from "the search failed"
+  // without parsing the message.
+  if (e && typeof e.exitCode === 'number' && e.name === 'GateError') {
+    stderr.write(`${e.message}\n`);
+    return e.exitCode;
+  }
+  if (e && e.code === 'FLAG_USAGE') {
+    stderr.write(`❌ Error: ${e.message}\n`);
+    return 2;
+  }
   if (e && e.code === 'AI_CLI_USAGE') {
     stderr.write(`❌ Error: ${e.message}\n`);
     return 2;

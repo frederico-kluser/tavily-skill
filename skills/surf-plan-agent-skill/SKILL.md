@@ -21,7 +21,7 @@ license: MIT
 argument-hint: "[task to plan, e.g. 'add rate limiting to the Express API']"
 allowed-tools: Bash(surf-search-normal:*), Bash(surf-search-unlimit:*), Bash(surf-research-skill:*), Bash(surf-plan-skill:*), Read, Glob, Grep, Write, Edit, WebSearch, WebFetch, AskUserQuestion
 metadata:
-  version: "7.0.0"
+  version: "8.0.0"
   requires: "node>=18; surf-search-normal + surf-research-skill in PATH (npm i -g surf-agent-skill) for Layer A research; an OpenRouter key (surf-research-skill ai-setup) for surf-ai synthesis — without it Layer A degrades to raw hits; harness WebSearch/WebFetch as Layer B fallback; plan dir at ~/.claude/plans/ (or ./plans/ if it exists in the project)"
 ---
 
@@ -81,24 +81,32 @@ The skill has three research layers. Use the FIRST one that works;
 **a blocked layer is an instruction to fall back, never to skip.**
 
 - **Layer A — `surf-search-normal` (surf-ai) via Bash (preferred).**
-  You brief it; the CLI plans the queries, fans them out concurrently across
-  Tavily + Parallel + Brave with key rotation, and returns a cited synthesis.
-  One call per research batch. This is the layer to reach for by default:
+  You brief it; the CLI plans the queries, fans up to `--sub-agents` of them
+  out at once against Brave Search (paced to your plan's rate limit, with key
+  rotation), and returns a cited synthesis. One call per research batch. This
+  is the layer to reach for by default:
 
   ```bash
   surf-search-normal "<the question this batch must answer>" \
     --task "planning: <one line about the feature being planned>" \
     --goal "<the plan decision this research feeds>" \
     --insights "<what the codebase read suggests — gets verified>" \
-    --deliverable "<the shape you need, e.g. 'a 3-option table with trade-offs'>"
+    --deliverable "<the shape you need, e.g. 'a 3-option table with trade-offs'>" \
+    --sub-agents=10
   ```
+
+  **Exit 78 means there is no valid Brave key.** That is a configuration
+  failure, not a research failure: stop, surface the message, and do not fall
+  through to another layer hoping for a different result.
 
   For a genuinely open-ended unknown on a harness with no bash timeout (or a
   Bash call you gave a long timeout), use `surf-search-unlimit` instead.
-- **Layer A-manual — raw `surf-research-skill` commands.**
-  Use when you need something surf-ai doesn't do: `extract` a specific URL you
-  already have, `map`/`crawl` a doc site, or run Parallel's async Task API.
-  Also the right layer when you want the raw hits with no synthesis.
+- **Layer A-manual — raw `surf-research-skill search` / `search-parallel`.**
+  The right layer when you want the raw hits with no synthesis, or when you
+  need Brave's own filters directly (`--domains`, `--time`, `--goggles`).
+  Note that `extract`, `crawl`, `map` and the async research verbs were removed
+  in v8: Brave's `/web/search` returns ranked links and snippets, never page
+  content. If you need a page's text, fetch the URL yourself.
 - **Layer B — harness-native `WebSearch` / `WebFetch` tools.**
   Use when Bash is unavailable, denied, or blocked by the current mode
   (plan/approval modes commonly block Bash but allow WebSearch — that is NOT
@@ -134,9 +142,14 @@ an option, never a requirement.
    New doubts enter the **Ambiguity Register** (Deep mode) or become the next
    wave's targets.
 4. **Iterate:** if new doubts survive review and you are under the **3-wave
-   cap** (inherited from `surf-research-skill` rule 7 — delegated mode does
-   NOT raise it), re-brief and dispatch again. Stop when saturated or the cap
-   is hit; record remaining gaps.
+   cap** (a limit of this delegated mode, deliberately tighter than
+   `surf-research-agent-skill`'s own 6-burst convergence cap — planning
+   research is narrower than open research), re-brief and dispatch again. Stop
+   when saturated or the cap is hit; record remaining gaps.
+   Each wave fires at most **10 simultaneous sub-agents**, and every
+   `surf-search-*` command inside them carries
+   `--sub-agents=max(1, floor(10 / <wave size>))` so the two levels add instead
+   of multiplying.
 
 ### Fallback
 
@@ -474,8 +487,10 @@ conflict** — don't silently pick one.
 - A quick factual check (does X support Y?) → `search --max 2-3 --quiet`,
   read the snippet.
 - A decision with real consequences (which of 2-3 approaches to recommend)
-  → `search --max 3-5`, then `extract` the 1-2 most load-bearing pages —
-  snippets alone are too thin to cite confidently.
+  → `search --max 5-10`, plus a second narrowed query (`--domains`, `--time`)
+  on the same question. Brave returns `description` plus up to five
+  `extra_snippets` per result, so more results per query is how you get more
+  text — there is no page-extraction step to fall back on.
 - Multiple independent unknowns at once (Deep mode's grounding phase) →
   `search-parallel` with one query per unknown, fanned out concurrently —
   see **surf-research-agent-skill** for the full fan-out protocol (ledger,
@@ -666,8 +681,8 @@ surf-search-unlimit "<open-ended question>" --max-rounds 4   # no-limit harness 
 # Research — Layer A-manual (raw hits, no synthesis)
 surf-research-skill search "Q1" "Q2" "Q3" --max 3 --quiet         # batch baseline
 surf-research-skill search "specific decision" --max 2 --quiet    # targeted question
-surf-research-skill search-parallel --queries-file F.json --concurrency 8 --json  # hand-built fan-out
-surf-research-skill extract --urls-file U.json --depth advanced --json
+surf-research-skill search-parallel --queries-file F.json --sub-agents=8 --json  # hand-built fan-out
+surf-research-skill search "q" --domains docs.example.com --time year --json     # Brave filters
 
 # Research — Layer B (when Bash is blocked: plan mode, denied perms, no CLI)
 #   WebSearch: one call per query, same query strings as Layer A

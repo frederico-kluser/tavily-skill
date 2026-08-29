@@ -1,9 +1,7 @@
 // Key discovery for library mode.
 // Priority (each level can contribute; results merged + deduped):
-//   1. Explicit opts (opts.tavilyKey / opts.tavilyKeys / parallel* / brave*)
-//   2. process.env  (TAVILY_API_KEYS comma-separated + TAVILY_API_KEY,
-//                    PARALLEL_API_KEYS + PARALLEL_API_KEY,
-//                    BRAVE_API_KEYS + BRAVE_API_KEY,
+//   1. Explicit opts (opts.braveKey / opts.braveKeys / openrouter*)
+//   2. process.env  (BRAVE_API_KEYS comma-separated + BRAVE_API_KEY,
 //                    OPENROUTER_API_KEYS + OPENROUTER_API_KEY)
 //   3. .env file at process.cwd() (lightweight regex parser, no dotenv dep)
 //   4. ~/.config/surf/keys.json (CLI persistent store, fallback only)
@@ -16,8 +14,6 @@ import { loadState, PROVIDERS } from './lib/state.mjs';
 // provider name) so a future provider whose slug differs from its env prefix
 // doesn't silently break key discovery.
 const ENV_BASE = {
-  tavily: 'TAVILY',
-  parallel: 'PARALLEL',
   brave: 'BRAVE',
   openrouter: 'OPENROUTER',
 };
@@ -53,14 +49,14 @@ function arrayify(v) {
 }
 
 function readFromObject(obj, base) {
-  // base = 'TAVILY' | 'PARALLEL' | 'BRAVE' | 'OPENROUTER'
+  // base = 'BRAVE' | 'OPENROUTER'
   return [
     ...splitCsv(obj[`${base}_API_KEYS`]),
     obj[`${base}_API_KEY`],
   ].filter(Boolean);
 }
 
-// opts.tavilyKey / opts.tavilyKeys — camelCase option names per provider.
+// opts.braveKey / opts.braveKeys — camelCase option names per provider.
 function explicitFor(opts, provider) {
   return [...arrayify(opts[`${provider}Key`]), ...arrayify(opts[`${provider}Keys`])];
 }
@@ -69,14 +65,12 @@ function explicitFor(opts, provider) {
  * Resolve API keys for every provider using the discovery hierarchy.
  *
  * @param {object} opts
- * @param {string|string[]} [opts.tavilyKey|opts.tavilyKeys]
- * @param {string|string[]} [opts.parallelKey|opts.parallelKeys]
  * @param {string|string[]} [opts.braveKey|opts.braveKeys]
  * @param {string|string[]} [opts.openrouterKey|opts.openrouterKeys]
  * @param {boolean} [opts.skipDotenv=false]
  * @param {boolean} [opts.skipConfigFile=false]
  * @param {string} [opts.cwd=process.cwd()]
- * @returns {Promise<{tavily: string[], parallel: string[], brave: string[], openrouter: string[]}>}
+ * @returns {Promise<{brave: string[], openrouter: string[]}>}
  */
 export async function discoverKeys(opts = {}) {
   const cwd = opts.cwd || process.cwd();
@@ -120,12 +114,48 @@ export async function discoverKeys(opts = {}) {
 /**
  * Build an in-memory state object that the dispatch layer can use directly
  * without touching ~/.config/surf/keys.json.
+ *
+ * Burn, cooldown and validation state IS carried over for keys that came from
+ * keys.json. It used to be reset to empty, which meant library callers happily
+ * re-used a key the CLI had already proved dead and paid a round-trip to learn
+ * it again on every call.
+ *
+ * The carry-over matches on key VALUE, never on index: discoverKeys merges four
+ * sources through a Set, so positions in the merged array have nothing to do
+ * with positions in keys.json. Keys that arrived from opts/env have no history
+ * and start clean, which is correct.
  */
 export async function buildInMemoryState(opts = {}) {
   const discovered = await discoverKeys(opts);
-  const state = { schema_version: 1, last_ok_provider: null, _inMemory: true };
+
+  let stored = null;
+  if (!opts.skipConfigFile) {
+    try { stored = await loadState(); } catch { stored = null; }
+  }
+
+  const state = { schema_version: 1, last_ok_provider: (stored && stored.last_ok_provider) || null, _inMemory: true };
   for (const p of PROVIDERS) {
-    state[p] = { keys: discovered[p] || [], current: 0, burned: [], cooldowns: [] };
+    const keys = discovered[p] || [];
+    const src = stored && stored[p];
+    const burned = [];
+    const cooldowns = [];
+    const validated = [];
+
+    if (src && Array.isArray(src.keys) && src.keys.length) {
+      const oldIndexOf = new Map(src.keys.map((k, i) => [k, i]));
+      keys.forEach((k, newIdx) => {
+        const oldIdx = oldIndexOf.get(k);
+        if (oldIdx === undefined) return;
+        const b = (src.burned || []).find(x => x.index === oldIdx);
+        if (b) burned.push({ ...b, index: newIdx });
+        const c = (src.cooldowns || []).find(x => x.index === oldIdx);
+        if (c) cooldowns.push({ ...c, index: newIdx });
+        const v = (src.validated || []).find(x => x.index === oldIdx);
+        if (v) validated.push({ ...v, index: newIdx });
+      });
+    }
+
+    state[p] = { keys, current: 0, burned, cooldowns, validated };
   }
   return state;
 }

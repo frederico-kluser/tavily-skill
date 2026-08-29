@@ -1,58 +1,46 @@
-// Provider registry: capability map + factory.
+// Provider registry.
+//
+// There is exactly ONE search provider: Brave. This is a deliberate product
+// decision, not an accident of configuration — see references/brave-api.md and
+// the v8.0.0 changelog entry.
+//
+// Why it is structural rather than a convention: the previous version kept
+// Tavily, Parallel, Wikipedia and DuckDuckGo here behind comments saying "these
+// are only for the free skill" and "research stays keyed-only". Those comments
+// did not stop the research orchestrator from silently answering a research
+// question out of Wikipedia and exiting 0 when the paid keys were dead. The
+// only reliable way to guarantee "Brave, or an honest error" is for no other
+// search adapter to exist.
+//
+// OPENROUTER IS NOT A SEARCH PROVIDER AND MUST NOT BE REMOVED. It is the LLM
+// that plans, analyzes and synthesizes (src/lib/ai/*). It owns API keys, so it
+// lives in state.mjs PROVIDERS to inherit key rotation and burn tracking, but
+// it is absent from every capability chain here and a search can never route
+// to it.
 
-import { tavilyProvider } from './tavily.mjs';
-import { parallelProvider } from './parallel.mjs';
 import { braveProvider } from './brave.mjs';
-import { wikipediaProvider } from './wikipedia.mjs';
-import { ddgProvider } from './ddg.mjs';
 
 export const PROVIDERS = {
-  tavily: tavilyProvider,
-  parallel: parallelProvider,
   brave: braveProvider,
-  wikipedia: wikipediaProvider,
-  ddg: ddgProvider,
 };
 
-// Keyless / free providers — used ONLY by the standalone `surf-free-skill`, NOT
-// by surf-research-skill. They require NO API key, are marked `keyless: true` on
-// their adapter, and are deliberately NOT in state.mjs PROVIDERS nor in any
-// capabilityMap chain — so they never appear in keys.json, `keys list`, setup,
-// or key validation, and never mix into research's paid provider fallback.
-// Dispatch reaches them only via the dedicated `flags.keyless` path, where they
-// run with an undefined ctx.key.
-export const KEYLESS_PROVIDERS = new Set(['wikipedia', 'ddg']);
-
-export function isKeyless(name) {
-  return KEYLESS_PROVIDERS.has(name);
-}
-
-// Default fallback chain per operation. Adjust with care: order matters.
-// Brave is search-only (no extract/crawl/map/research equivalents). It joins
-// the search chain as the 3rd option — Tavily/Parallel keep their precedence
-// to preserve hot-path behavior for existing users.
-// NOTE: keyless providers (wikipedia, ddg — see KEYLESS_PROVIDERS) are
-// deliberately NOT in any chain here. surf-research-skill stays keyed-only, so
-// `search` requires a key. The keyless providers are reached only via the
-// dedicated `flags.keyless` dispatch path used by the standalone surf-free-skill.
+// Operation → the providers able to serve it. One provider, one operation.
+//
+// Brave's /web/search is a SERP: it returns ranked links and snippets, and no
+// page content. Extraction, crawling, site mapping and asynchronous deep
+// research have no Brave equivalent on the Search plan, so those verbs were
+// removed in v8.0.0 rather than kept as stubs that cannot work.
+//
+// (Brave does ship a /res/v1/llm/context endpoint that returns pre-extracted
+// page text, but it is gated: a Search-plan key without it answers HTTP 400
+// OPTION_NOT_IN_PLAN. If you upgrade, that is the endpoint to add here.)
 export const capabilityMap = {
-  search:           ['tavily', 'parallel', 'brave'],
-  extract:          ['tavily', 'parallel'],
-  crawl:            ['tavily'],
-  map:              ['tavily'],
-  'research-start': ['parallel', 'tavily'],
-  research:         ['parallel', 'tavily'],
-  'research-poll':  ['BY_REQUEST_ID'],
-  usage:            ['BY_PROVIDER'],
+  search: ['brave'],
 };
 
 export function getProvider(name) {
   return PROVIDERS[name];
 }
 
-export function providerFromRequestId(requestId) {
-  if (typeof requestId !== 'string') return null;
-  if (requestId.startsWith('tvly:')) return { provider: 'tavily', providerRunId: requestId.slice(5) };
-  if (requestId.startsWith('pllx:')) return { provider: 'parallel', providerRunId: requestId.slice(5) };
-  return null;
-}
+/** The one search provider, for error messages and setup flows. */
+export const SEARCH_PROVIDER = 'brave';

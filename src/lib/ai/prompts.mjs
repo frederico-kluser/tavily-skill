@@ -62,12 +62,16 @@ export const PLAN_SCHEMA = {
       items: {
         type: 'object',
         additionalProperties: false,
-        required: ['id', 'q', 'sub', 'category'],
+        required: ['id', 'q', 'sub', 'category', 'priority'],
         properties: {
           id: { type: 'string' },
           q: { type: 'string' },
           sub: { type: 'string', description: 'id of the sub-question this serves' },
           category: { type: 'string', enum: CATEGORIES },
+          priority: {
+            type: 'number',
+            description: '0..1. How much the objective depends on this query. The frontier spends its wave budget on the highest priorities first, so this is what decides what actually gets searched when there are more queries than slots.',
+          },
         },
       },
     },
@@ -92,6 +96,7 @@ export function planSystem() {
     `5. Start wide, then narrow. The first query per sub-question surveys what exists.`,
     `6. Treat the agent's stated insights as HYPOTHESES TO VERIFY, not as facts. Plan a query that could falsify each one.`,
     `7. If the question involves versions, prices, APIs or anything that changes, include a query aimed at the current state as of today.`,
+    `8. Set \`priority\` honestly on a 0-1 scale. There are usually more queries than search slots, and priority is exactly what decides which ones run. Reserve >0.8 for queries the answer cannot be written without; use <0.3 for nice-to-have colour.`,
     ``,
     UNTRUSTED,
   ].join('\n');
@@ -111,7 +116,7 @@ export function planUser(ctx, { maxQueries }) {
 export const ANALYSIS_SCHEMA = {
   type: 'object',
   additionalProperties: false,
-  required: ['resolved', 'confidence', 'coverage', 'open_points', 'next_queries', 'stop_reason'],
+  required: ['resolved', 'confidence', 'coverage', 'open_points', 'next_queries', 'branches_to_close', 'saturation', 'stop_reason'],
   properties: {
     resolved: {
       type: 'boolean',
@@ -142,14 +147,33 @@ export const ANALYSIS_SCHEMA = {
       items: {
         type: 'object',
         additionalProperties: false,
-        required: ['id', 'q', 'sub', 'category'],
+        required: ['id', 'q', 'sub', 'category', 'priority', 'kind', 'parent'],
         properties: {
           id: { type: 'string' },
           q: { type: 'string' },
           sub: { type: 'string' },
           category: { type: 'string', enum: CATEGORIES },
+          priority: { type: 'number', description: '0..1. Highest priorities are searched first when slots are scarce.' },
+          kind: {
+            type: 'string',
+            enum: ['breadth', 'depth', 'verify'],
+            description: "'breadth' opens a new facet of the sub-question; 'depth' drills into something a previous result raised; 'verify' tries to FALSIFY a specific claim already gathered.",
+          },
+          parent: {
+            type: 'string',
+            description: 'The id of the query whose RESULT made you ask this. Empty string for a genuinely new line of enquiry. This is what turns the run into a tree instead of a flat re-search.',
+          },
         },
       },
+    },
+    branches_to_close: {
+      type: 'array',
+      description: 'Sub-question ids that are fully answered and must not receive further queries. Closing a branch is how the remaining budget gets concentrated on what is still thin.',
+      items: { type: 'string' },
+    },
+    saturation: {
+      type: 'boolean',
+      description: 'True when the last round mostly returned sources you had already seen — i.e. more searching on the same lines will not add evidence.',
     },
     stop_reason: {
       type: 'string',
@@ -170,12 +194,15 @@ export function analysisSystem() {
     `4. next_queries must target the OPEN POINTS specifically. Never repeat a query that already ran.`,
     `5. If more searching genuinely cannot help (the information does not exist publicly, or the question needs the user to decide), set resolved appropriately, return an empty next_queries, and say so in stop_reason.`,
     `6. Be strict about dates. A source older than the thing it describes is stale evidence — call it out.`,
+    `7. Every next_query is a node in a tree. Set \`parent\` to the id of the query whose RESULT provoked it, and \`kind\` to what it does: 'depth' drills into something a result raised, 'breadth' opens a new facet, 'verify' tries to FALSIFY a claim you already have. A follow-up that could have been written before seeing any results is not depth — it is a query the planner should have asked, and it belongs at 'breadth' with a low priority.`,
+    `8. Use \`branches_to_close\` aggressively. A sub-question that is answered should stop receiving queries so the remaining budget concentrates on what is still thin. Being reluctant to close branches is how a run spends everything confirming what it already knew.`,
+    `9. Set \`saturation\` true when this round mostly returned sources you had already seen. That is the signal to stop, and it is more reliable than your own sense of completeness.`,
     ``,
     UNTRUSTED,
   ].join('\n');
 }
 
-export function analysisUser(ctx, { plan, digest, alreadyRan, round, maxRounds, maxNextQueries }) {
+export function analysisUser(ctx, { plan, digest, alreadyRan, round, maxRounds, maxNextQueries, rejected, openBranches, closedBranches }) {
   return [
     briefBlock(ctx),
     ``,
@@ -191,8 +218,16 @@ export function analysisUser(ctx, { plan, digest, alreadyRan, round, maxRounds, 
     `EVIDENCE GATHERED SO FAR (round ${round} of at most ${maxRounds}):`,
     digest,
     ``,
+    closedBranches && closedBranches.length
+      ? `BRANCHES ALREADY CLOSED (do not propose queries for these):\n${closedBranches.map(b => `- ${b}`).join('\n')}`
+      : '',
+    rejected && rejected.length
+      ? `CANDIDATES ALREADY REJECTED (proposing them again wastes the round):\n${rejected.slice(0, 20).map(r => `- ${r.q} — ${r.reason}`).join('\n')}`
+      : '',
+    ``,
     `Return at most ${maxNextQueries} next_queries.`,
-  ].join('\n');
+    openBranches ? `${openBranches} branch(es) are still open; the wave budget is split across them, so a query that closes a thin branch beats a fourth query on a well-covered one.` : '',
+  ].filter(Boolean).join('\n');
 }
 
 // --- Stage 3: synthesis ----------------------------------------------------

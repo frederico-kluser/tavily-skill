@@ -25,13 +25,19 @@ Leia o caso quando o sintoma aparecer. O `SKILL.md` traz só o índice.
 `surf-search-*` — ele mesmo morreu, estourou o timeout do harness, ou devolveu
 só a mensagem de erro.
 
-Handoff marcado FALLBACK **não é este caso**: o sub-agente já caiu para
-WebSearch/WebFetch e trouxe resposta citável. Registre RESPONDIDA (FALLBACK) e
-siga — não re-dispare.
+Não existe mais handoff FALLBACK. A v8 é Brave-only: se a CLI não respondeu, a
+dúvida fica BLOQUEADA. Um sub-agente que contorne a CLI com WebSearch/WebFetch
+traz uma fonte que não entra no ledger e não pode ser citada — trate como
+BLOQUEADA e siga — não re-dispare.
 
-**Ação.** O T3 (regra 3) já mandou o sub-agente tentar `--max-queries 4` e,
-falhando de novo, cair para WebSearch/WebFetch. **Nunca prescreva de novo essas
-duas coisas.** Bifurque:
+**Antes de qualquer outra coisa, olhe o código de saída.** Se for **78**, não é
+este caso: não há chave Brave válida. Pare a pesquisa inteira, devolva a
+mensagem do portão verbatim e encerre — nenhum sub-agente vai conseguir, e
+disparar mais só multiplica o mesmo erro. Ver `chave-brave-inválida` na
+`degradation` da SKILL.md.
+
+**Ação.** O T3 (regra 3) já mandou o sub-agente tentar `--max-queries 4`.
+**Nunca prescreva isso de novo.** Bifurque:
 
 - Ele morreu ANTES de rodar a escada (exit 143, timeout do harness, spawn
   falho): a falha foi do processo, não da dúvida. Re-dispare o MESMO prompt uma

@@ -1,9 +1,11 @@
 // `surf-research-skill keys` subcommands: add, remove, list (status), reset, clear.
 
-import { loadState, saveStateAtomic, clearBurned, PROVIDERS, KEYS_FILE } from './state.mjs';
+import {
+  loadState, saveStateAtomic, clearBurned, blankProvider, nextResetIso,
+  setValidation, getValidation, PROVIDERS, KEYS_FILE,
+} from './state.mjs';
 import { maskKey } from './flags.mjs';
 import { validateAll, formatValidation } from '../validators/index.mjs';
-import { KEYLESS_PROVIDERS } from './providers/index.mjs';
 
 // Read newline-delimited keys from stdin (for `keys add --provider X --stdin`
 // or a `-` positional). Returns [] when nothing is piped so we never block.
@@ -13,13 +15,6 @@ async function readStdinKeys() {
   for await (const chunk of process.stdin) chunks.push(chunk);
   return Buffer.concat(chunks).toString('utf8')
     .split(/\r?\n/).map(s => s.trim()).filter(Boolean);
-}
-
-function nextResetIso(burnedAt) {
-  const d = new Date(burnedAt);
-  if (Number.isNaN(d.getTime())) return '—';
-  const next = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 1, 0, 0, 0));
-  return next.toISOString();
 }
 
 function requireProvider(flags, allowAll = false) {
@@ -69,7 +64,16 @@ export async function keysAdd(pos, flags) {
       return;
     }
     state[provider].keys.push(key);
-    results.push({ key, added: true, index: state[provider].keys.length - 1, validation });
+    const index = state[provider].keys.length - 1;
+    // Record the verdict so the preflight gate does not re-prove this key on
+    // the very next command. Free either way, but it costs a round-trip and a
+    // slot in Brave's 1-second rate window.
+    if (validation) {
+      setValidation(state, provider, index, {
+        ok: validation.valid, status: validation.statusCode, reason: validation.valid ? null : (validation.error || validation.kind),
+      });
+    }
+    results.push({ key, added: true, index, validation });
   });
   for (const key of already) results.push({ key, added: false, reason: 'already exists' });
 
@@ -97,9 +101,14 @@ export async function keysRemove(pos, flags) {
   keys.splice(idx, 1);
   // adjust current and burned indices
   if (state[provider].current >= keys.length) state[provider].current = 0;
-  state[provider].burned = state[provider].burned
-    .filter(b => b.index !== idx)
-    .map(b => (b.index > idx ? { ...b, index: b.index - 1 } : b));
+  const reindex = (list) => (list || [])
+    .filter(x => x.index !== idx)
+    .map(x => (x.index > idx ? { ...x, index: x.index - 1 } : x));
+  state[provider].burned = reindex(state[provider].burned);
+  state[provider].cooldowns = reindex(state[provider].cooldowns);
+  // Validation verdicts are per-INDEX; leaving them unshifted would attribute
+  // one key's verdict to another.
+  state[provider].validated = reindex(state[provider].validated);
   await saveStateAtomic(state);
   return { provider, removed: true, index: idx, state };
 }
@@ -125,6 +134,8 @@ export async function keysList(_pos, flags) {
       if (i === pp.current) flags.push('current');
       if (burnedIdx.has(i)) flags.push('burned');
       if (coolingIdx.has(i)) flags.push('cooling');
+      const v = getValidation(state, p, i);
+      if (v) flags.push(v.ok ? `validated ${String(v.at).slice(0, 10)}` : 'INVALID');
       lines.push(`- [${i}] ${maskKey(k)}${flags.length ? '  *(' + flags.join(', ') + ')*' : ''}`);
     });
     if (pp.burned.length) {
@@ -136,8 +147,11 @@ export async function keysList(_pos, flags) {
     }
     lines.push('');
   }
-  lines.push(`## free, no-key search`);
-  lines.push(`- Need a lookup without any key? Use the separate \`surf-free-skill\` (${[...KEYLESS_PROVIDERS].join(' + ')}). surf-research-skill itself requires a key.`);
+  lines.push(`## no key, no search`);
+  lines.push(`- surf v8 is Brave-only. Without a valid Brave key every research command exits 78;`);
+  lines.push(`  there is no free tier underneath and no other provider to fall back to.`);
+  lines.push(`- A SECOND Brave key is not just redundancy: each key has its own per-second rate`);
+  lines.push(`  budget, so two keys let twice as many sub-agents search at once.`);
   return { text: lines.join('\n') };
 }
 
@@ -145,6 +159,14 @@ export async function keysReset(_pos, flags) {
   const state = await loadState();
   const provider = flags.provider ? requireProvider(flags) : null;
   clearBurned(state, provider);
+  // Also drop cached FAILED verdicts and cooldowns. A reset means "try these
+  // keys again"; leaving an `ok:false` entry behind would have the preflight
+  // gate refuse the key without ever re-testing it, which is exactly the
+  // situation the user ran reset to escape.
+  for (const p of provider ? [provider] : PROVIDERS) {
+    state[p].validated = (state[p].validated || []).filter(v => v.ok);
+    state[p].cooldowns = [];
+  }
   await saveStateAtomic(state);
   return { provider, reset: true, state };
 }
@@ -159,12 +181,14 @@ export async function keysClear(_pos, flags) {
     }
   }
   const state = await loadState();
+  // blankProvider(), not an inline literal: an inline one silently omits
+  // `cooldowns` and `validated`, which normalizeProvider then has to repair.
   if (flags.all) {
-    for (const p of PROVIDERS) state[p] = { keys: [], current: 0, burned: [] };
+    for (const p of PROVIDERS) state[p] = blankProvider();
     state.last_ok_provider = null;
   } else {
     const provider = requireProvider(flags);
-    state[provider] = { keys: [], current: 0, burned: [] };
+    state[provider] = blankProvider();
     if (state.last_ok_provider === provider) state.last_ok_provider = null;
   }
   await saveStateAtomic(state);

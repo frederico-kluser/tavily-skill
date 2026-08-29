@@ -3,11 +3,14 @@
 // the calling agent's bash timeout.
 //
 // The CLI does everything: an LLM (DeepSeek via OpenRouter) turns your brief
-// into a category-diverse query set, every query runs concurrently through the
-// Tavily → Parallel → Brave → keyless fallback chain, and the LLM writes the
-// final cited answer in the shape you asked for. Rate limits, dead keys,
-// unavailable models and failed searches are all absorbed in here — you get an
-// answer, not an error to handle.
+// into a category-diverse query set, up to --sub-agents of them run at once
+// against Brave Search (paced to your plan's real rate limit), and the LLM
+// writes the final cited answer in the shape you asked for. Rate limits, key
+// rotation, unavailable models and failed searches are absorbed in here.
+//
+// The one thing NOT absorbed is a missing or invalid Brave key: that exits 78
+// before any work starts. v8 answers from Brave or says why it cannot — it
+// never quietly answers from somewhere else.
 //
 // Need more than one round? Use `surf-search-unlimit`.
 
@@ -15,8 +18,9 @@ import { parseFlags } from '../src/lib/flags.mjs';
 import { setSilent } from '../src/lib/progress.mjs';
 import { runAiCommand, reportAiError } from '../src/lib/ai/cli.mjs';
 import { migrateLegacy } from '../src/lib/state.mjs';
+import { preflightOrExit } from '../src/lib/preflight.mjs';
 
-const VERSION = '7.0.0';
+const VERSION = '8.0.0';
 
 const HELP = `surf-search-normal — autonomous web research, ONE round
 
@@ -32,10 +36,17 @@ usable instead of generic):
   --brief-file <f.json>  {"question","task","goal","insights","deliverable"}
 
 Tuning:
-  --max-queries N     queries this round (default 6, max 24)
-  --concurrency N     parallel searches (default 6, max 16)
-  --max N             results per search (default 5)
-  --search-mode <fast|normal|slow>
+  --sub-agents N      simultaneous searches (default 10, max 20; also
+                      --sub-agents=N). ONE budget: it is both the wave width
+                      and the worker-pool width. surf reads your Brave plan's
+                      real requests-per-second from the API's own headers and
+                      paces the wave to it, so a number above what the plan
+                      allows queues rather than fails.
+  --concurrency N     deprecated alias for --sub-agents
+  --max-queries N     frontier admissions per wave (>= --sub-agents)
+  --max-depth N       how far a branch may descend (default 2, max 6)
+  --max N             results per search (1-20). Overrides --search-mode.
+  --search-mode <fast|normal|slow>   results per query: 5 / 10 / 20
   --ai-model <slug>   override the LLM (default deepseek/deepseek-v4-pro)
   --budget-ms N         Override the self-budget (0 = unlimited). Also SURF_AI_BUDGET_MS.
   --no-cache            Skip the response cache for this run.
@@ -47,12 +58,15 @@ Output:
   --quiet             silence the stderr progress log
   --help, -h · --version, -v
 
-One round, by design: the whole run is fitted inside the harness's detected
+One wave, by design: the whole run is fitted inside the harness's detected
 bash timeout, so it returns an answer instead of being killed mid-flight.
-For iterative deepening (analyze the harvest, search again, repeat) use:
+For real deepening (analyze the harvest, descend, repeat) use:
   surf-search-unlimit "<question>"
 
-Setup (once):  surf-research-skill ai-setup     # stores the OpenRouter key
+Exit codes:  0 ok · 1 nothing retrieved · 2 usage error · 78 no valid Brave key
+
+Setup (once):  surf              # Brave key + OpenRouter key, both validated
+               surf-research-skill ai-setup     # just the OpenRouter key
 Docs:          ~/.agents/skills/surf-research-agent-skill/SKILL.md
 `;
 
@@ -80,8 +94,21 @@ if (argv[0] === '--version' || argv[0] === '-v') {
 
 await migrateLegacy();
 
-const { pos, flags } = parseFlags(argv);
+let pos, flags;
+try {
+  ({ pos, flags } = parseFlags(argv));
+} catch (e) {
+  process.stderr.write(`❌ Error: ${e.message}\n`);
+  process.exit(2);
+}
 if (flags.quiet) setSilent(true);
+
+// Halt here, before the LLM plans anything, if there is no valid Brave key.
+// Validating costs nothing (a q-less request is rejected before it is billed)
+// and the verdict is cached for a week, so this is milliseconds in the common
+// case — and it is the difference between an honest exit 78 and a confident
+// answer assembled from nothing.
+await preflightOrExit();
 
 try {
   const code = await runAiCommand({ pos, flags, mode: 'normal' });

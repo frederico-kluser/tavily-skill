@@ -1,31 +1,34 @@
 ---
 name: surf-research-agent-skill
 description: >-
-Multi-agent research orchestrator using bursts of doubt. The main agent
-  never searches: it raises every question it has, fires a burst of parallel
-  sub-agents with one closed question per doubt, then analyzes whether the
-  answers opened new questions. Two modes — single-burst (one burst and
+  Multi-agent research orchestrator using bursts of doubt, on Brave Search
+  and nothing else. The main agent never searches: it raises every question it
+  has, fires a burst of parallel sub-agents with one closed question per doubt
+  (at most 10 at a time, tunable with sub-agents=N), then analyzes whether the
+  answers opened new questions. Stops immediately if no valid Brave key exists
+  — there is no fallback provider and no free tier underneath. Two modes — single-burst (one burst and
   synthesize) and continuous-burst (new bursts until saturation, questioning
   its own answers). In both modes, a context burst consults the calling
   conversation and the repository before any web search. Each sub-agent uses
   the surf-ai CLI and returns a structured handoff. Triggers on: pesquise,
   investigue, busca na web, ache tudo sobre, levantamento completo, pesquisa
   profunda, compare X e Y, search the web, research, investigate, deep dive,
-  find everything about, compare X vs Y, crawl the docs, fetch this page,
-  extract from URL. Not for local files, git, code editing, or writing
-  execution plans — for planning, use surf-plan-agent-skill.
+  find everything about, compare X vs Y. Not for local files, git, code
+  editing, or writing execution plans — for planning, use
+  surf-plan-agent-skill. Not for reading a specific URL either: Brave returns
+  ranked links and snippets, never page content.
 license: MIT
-argument-hint: "question, URL, or topic — optionally followed by single-burst or continuous-burst"
-allowed-tools: Agent, Task, Read, Write, Edit, Grep, Glob, Skill, Bash(git:*), Bash(mkdir:*), Bash(ls:*), Bash(wc:*)
+argument-hint: "question or topic — optionally single-burst | continuous-burst, and sub-agents=N (default 10)"
+allowed-tools: Agent, Task, Read, Write, Edit, Grep, Glob, Skill, Bash(git:*), Bash(mkdir:*), Bash(ls:*), Bash(wc:*), Bash(surf-research-skill keys:*)
 model: inherit
 effort: xhigh
 metadata:
-  version: "7.0.0"
-  requires: "node>=18; install with `npm i -g surf-agent-skill`; search keys via `surf` or `surf-research-skill setup`; LLM key via `surf-research-skill ai-setup` (or exported OPENROUTER_API_KEY); per-project bash timeout via `surf-research-skill project-config`"
+  version: "8.0.0"
+  requires: "node>=18; install with `npm i -g surf-agent-skill`; a VALID BRAVE SEARCH key via `surf` or `surf-research-skill keys add --provider brave <key>` — without it every command exits 78 and this skill must stop; LLM key via `surf-research-skill ai-setup` (or exported OPENROUTER_API_KEY); per-project bash timeout via `surf-research-skill project-config`"
   environment: "A rota CALLER usa `subagent_type: \"fork\"`, que exige fork mode (CLAUDE_CODE_FORK_SUBAGENT=1 ou rollout escalonado). Sem ele a rota cai para INLINE automaticamente — nada quebra."
 ---
 
-<orchestrator xmlns="urn:surf-research-agent-skill:v7">
+<orchestrator xmlns="urn:surf-research-agent-skill:v8">
 
 <identity>
   <role>ORQUESTRADOR DE RAJADAS DE DÚVIDA</role>
@@ -38,7 +41,11 @@ metadata:
     pool — e não os usa. A R1 é disciplina, não trava: qualquer restrição de
     ferramenta declarada no frontmatter se propaga para os sub-agentes da
     rajada e desarmaria a busca deles. Se você chamar uma dessas ferramentas,
-    você quebrou a skill. A dúvida vira sub-agente, sempre.</enforcement>
+    você quebrou a skill. A dúvida vira sub-agente, sempre.
+    E os sub-agentes buscam por UM caminho só: os binários surf-search-*, que
+    falam com o Brave. WebSearch e WebFetch não são plano B — uma fonte que não
+    passou pela CLI não entra no ledger, não recebe número de citação e não
+    pode ser auditada no relatório final.</enforcement>
 </identity>
 
 <modes>
@@ -237,8 +244,22 @@ metadata:
 
   <phase id="0" name="INTAKE">
     <steps>
-      <step>Leia $ARGUMENTS. Classifique: factual · comparativa · panorama ·
-        aprofundamento · procedural · depuração.</step>
+      <step>EXTRAIA `sub-agents=N` de $ARGUMENTS ANTES de qualquer outra coisa.
+        Aceite `sub-agents=8`, `--sub-agents=8` e `--sub-agents 8`. Remova o
+        token do texto restante — se não remover, ele vira parte da pergunta e
+        você pesquisa "sub-agents=8" no Google. Sem o token, N = 10. Fora de
+        1..20, corrija para o limite mais próximo e declare a correção.
+        N é o TETO DE SIMULTANEIDADE da rajada (ver `budgets`).</step>
+      <step>PORTÃO DA CHAVE — antes de qualquer rajada, rode
+        `surf-research-skill keys list`. Se ele sair com código 78, ou se a
+        seção `brave` não tiver nenhuma chave utilizável, PARE AQUI. Não
+        dispare sub-agente nenhum: eles falhariam um a um, cada um gastando
+        contexto para redescobrir a mesma coisa. Devolva a mensagem do portão
+        ao usuário, verbatim, e encerre. Esta skill não tem plano B — não
+        existe provedor alternativo, tier gratuito, nem WebSearch de reserva.
+        Uma resposta sem Brave seria uma resposta inventada.</step>
+      <step>Leia o resto de $ARGUMENTS. Classifique: factual · comparativa ·
+        panorama · aprofundamento · procedural · depuração.</step>
       <step>Decida o MODO (ver `modes`). Padrão rajada-única.</step>
       <step>Escreva o ENTREGÁVEL em uma frase: a forma exata da resposta.
         Artigo, tabela comparativa, ranking, guia passo-a-passo, veredito.</step>
@@ -305,7 +326,8 @@ metadata:
     <repeat>Rajada 1 nos dois modos; rajadas 2..N só em rajada-contínua.</repeat>
     <steps>
       <step>Selecione as dúvidas ABERTAS desta rajada, qualquer rota, ordenadas
-        por impacto no entregável. Aplique o teto de tamanho (ver `budgets`).
+        por impacto no entregável. Aplique o teto de `budgets/teto-de-rajada`:
+        no máximo N sub-agentes nesta rajada (N = `sub-agents`, default 10).
         O que não couber permanece ABERTA, com o motivo "excedeu o teto da
         rajada N": vira a próxima rajada (contínua) ou entra em "Questões em
         aberto" com o que a fecharia (única). Você PODE fundir duas excedentes
@@ -325,13 +347,22 @@ metadata:
       <step><strong>Dispare TODAS as dúvidas WEB restantes na mesma
         mensagem</strong> — um <tool>Agent</tool> por dúvida,
         `subagent_type: "general-purpose"`, `run_in_background: false`,
-        template T3 preenchido, marcando cada dúvida como EM-VOO.</step>
+        template T3 preenchido, marcando cada dúvida como EM-VOO.
+        DIVIDA O ORÇAMENTO: cada comando surf-search-* no prompt T3 leva
+        `--sub-agents=max(1, floor(N / <tamanho desta rajada>))`. Os dois níveis
+        se somam, não se multiplicam — sem isso, 10 sub-agentes com o default de
+        10 são 100 requisições simultâneas ao Brave.</step>
       <step>Barreira.</step>
       <step>Registre cada handoff: resposta, confiança, fontes, caminho do
-        arquivo. Marque RESPONDIDA — anotando FALLBACK quando o sub-agente usou
-        WebSearch/WebFetch, que continua sendo resposta — ou BLOQUEADA quando o
-        contador de `cli-falhou` estourar. Esse contador conta disparos SEUS,
-        nunca as tentativas internas do sub-agente.</step>
+        arquivo. Marque RESPONDIDA, ou BLOQUEADA quando o contador de
+        `cli-falhou` estourar. Esse contador conta disparos SEUS, nunca as
+        tentativas internas do sub-agente.
+        NÃO EXISTE MAIS FALLBACK. A v8 é Brave-only: se a CLI falhar, a dúvida
+        fica BLOQUEADA e entra no relatório como tal. Um sub-agente que
+        contorne a CLI com WebSearch/WebFetch produz uma fonte que a skill não
+        pode auditar nem citar — trate esse handoff como BLOQUEADO, não como
+        resposta. Se a CLI sair com 78 é a chave, não a rede: pare a rajada
+        inteira (fase 0, portão da chave).</step>
     </steps>
   </phase>
 
@@ -476,12 +507,37 @@ metadata:
     <item case="fato simples">1 sub-agente, 3–10 chamadas de ferramenta —
       ou nenhum, se você já sabe.</item>
     <item case="comparação direta">2–4 sub-agentes, 10–15 chamadas cada.</item>
-    <item case="pesquisa complexa ou aberta">10+ sub-agentes com
-      responsabilidades claramente divididas. Na prática, 3–5 por rajada é o
-      ponto de equilíbrio e o resto se distribui entre rajadas — em
-      rajada-única não há próxima rajada, então o excedente vira questão em
-      aberto e o relatório declara que o modo contínuo o fecharia.</item>
+    <item case="pesquisa complexa ou aberta">Até N sub-agentes por rajada
+      (N = `sub-agents`, default 10), com responsabilidades claramente
+      divididas. Na prática 3–5 por rajada é o ponto de equilíbrio e o resto se
+      distribui entre rajadas — em rajada-única não há próxima rajada, então o
+      excedente vira questão em aberto e o relatório declara que o modo
+      contínuo o fecharia.</item>
   </sizing>
+  <policy id="teto-de-rajada">
+    <rule>O TETO DESTA SKILL É 10 SUB-AGENTES SIMULTÂNEOS, ajustável por
+      `sub-agents=N` (1..20), lido na fase 0. Ele fica ABAIXO dos limites do
+      harness listados em `hard-limits`, e é ele que manda.</rule>
+    <rule>N é teto, não meta. Uma rajada de 3 porque só havia 3 dúvidas boas
+      está certa; inventar dúvida para preencher slot é o erro clássico —
+      produz sub-agente que volta com achado marginal e polui a triagem.</rule>
+    <rule>Excedente ENFILEIRA, nunca re-dispara. As dúvidas que não couberam
+      permanecem ABERTAS com o motivo "excedeu o teto da rajada N" e entram na
+      rajada seguinte (contínua) ou em "Questões em aberto" (única).</rule>
+    <rule>OS DOIS NÍVEIS NÃO PODEM MULTIPLICAR. Cada sub-agente T3 chama a CLI,
+      que tem o SEU próprio leque paralelo. Se você dispara 10 sub-agentes e
+      cada um usa o default de 10, são 100 requisições simultâneas ao Brave.
+      Por isso todo prompt de rajada carrega
+      `--sub-agents=max(1, floor(N / <tamanho da rajada>))`. Com N=10 e uma
+      rajada de 5, cada sub-agente recebe `--sub-agents=2`.</rule>
+    <rule>O PLANO BRAVE É O TETO REAL. A CLI lê o limite de requisições por
+      segundo do próprio cabeçalho de resposta do Brave e enfileira o que
+      passar disso — não falha, mas demora. Um plano legado de 1 req/s serve
+      ~1 busca por segundo NO TOTAL, somando todos os sub-agentes. Se a CLI
+      avisar que o leque excede o plano, não aumente N: ou reduza a rajada, ou
+      adicione uma segunda chave Brave (cada chave tem o seu próprio orçamento
+      por segundo, então duas chaves dobram o paralelismo real).</rule>
+  </policy>
   <hard-limits>
     <item>Simultâneos: 20 sub-agentes RODANDO ao mesmo tempo na sessão
       (`CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS`). Estourar falha o spawn com
@@ -513,6 +569,12 @@ metadata:
   <index>Detalhe de cada caso em `references/failure-modes.md`. Leia o caso
     quando o sintoma aparecer.</index>
   <case id="cli-falhou">Sub-agente voltou sem handoff utilizável por causa do surf-search-*.</case>
+  <case id="chave-brave-inválida">Qualquer surf-search-* saiu com 78. Não é falha de rede
+    nem de rajada: não há chave Brave utilizável. Pare TUDO, devolva a mensagem do portão
+    verbatim e encerre. Re-disparar só multiplica o mesmo erro.</case>
+  <case id="brave-sem-cota">A CLI avisa que o leque excede o plano, ou 429 repetido. Reduza o
+    tamanho da rajada ou adicione uma segunda chave Brave — cada chave tem o seu próprio
+    orçamento por segundo. Não aumente `sub-agents`: acima do plano, ele só enfileira.</case>
   <case id="handoff-sem-payload">Sub-agente terminou com sucesso e não devolveu o formato.</case>
   <case id="fork-indisponível">`Agent type 'fork' not found` — modo fork desligado. Cai para INLINE.</case>
   <case id="teto-de-sessão">`Subagent spawn limit reached` — 200 na sessão. Pare de disparar rajadas.</case>
@@ -575,8 +637,6 @@ metadata:
 
 </orchestrator>
 
-</orchestrator>
-
 ---
 
 ## Referências — leia sob demanda, nenhuma consome contexto antes disso
@@ -585,5 +645,6 @@ metadata:
 |---|---|
 | `references/burst-templates.md` | Antes da primeira rajada. Templates T1–T8 com o contrato de 5 campos. |
 | `references/failure-modes.md` | Quando um caso de `degradation` disparar. |
-| `references/surf-ai-cli.md` | Ao escrever prompts de delegação: flags, saída JSON, códigos de saída, fallback. |
-| `references/COSTS.md` | Quando o orçamento de busca importar. |
+| `references/surf-ai-cli.md` | Ao escrever prompts de delegação: flags, saída JSON, códigos de saída. |
+| `references/brave-api.md` | Quando importar o que o Brave devolve, o que ele não devolve, ou por que uma flag não teve efeito. |
+| `references/COSTS.md` | Quando o orçamento de busca importar (o teto real é o plano Brave, não o dinheiro). |

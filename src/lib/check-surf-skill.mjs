@@ -13,7 +13,7 @@ const pexec = promisify(exec);
  * @returns {Promise<{
  *   installed: boolean,
  *   version?: string,
- *   keyCounts?: { tavily: number, parallel: number, brave: number },
+ *   keyCounts?: { brave: number, braveUsable: number },
  *   error?: string,
  * }>}
  */
@@ -26,11 +26,11 @@ export async function checkSurfSkill() {
     try {
       const { stdout: kOut } = await pexec('surf-research-skill keys list --json', { timeout: 10_000 });
       const state = JSON.parse(kOut);
-      keyCounts = {
-        tavily:   Array.isArray(state?.tavily?.keys)   ? state.tavily.keys.length   : 0,
-        parallel: Array.isArray(state?.parallel?.keys) ? state.parallel.keys.length : 0,
-        brave:    Array.isArray(state?.brave?.keys)    ? state.brave.keys.length    : 0,
-      };
+      const keys = Array.isArray(state?.brave?.keys) ? state.brave.keys.length : 0;
+      const burned = Array.isArray(state?.brave?.burned) ? state.brave.burned.length : 0;
+      // Report USABLE, not total. A burned-only install has keys and cannot
+      // search, and reporting the raw count made doctor call that healthy.
+      keyCounts = { brave: keys, braveUsable: Math.max(0, keys - burned) };
     } catch {
       // keys list --json may fail (older surf-research-skill); ignore.
     }

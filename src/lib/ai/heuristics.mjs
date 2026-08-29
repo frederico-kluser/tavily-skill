@@ -62,6 +62,9 @@ export function heuristicPlan(ctx, { maxQueries = 6 } = {}) {
       q: c.q.slice(0, 380),
       sub: c.sub,
       category: CATEGORIES.includes(c.category) ? c.category : 'community',
+      // The frontier orders by priority even when no LLM set one. Earlier
+      // candidates are the more literal readings of the question, so they lead.
+      priority: Math.max(0.3, 0.9 - queries.length * 0.05),
     });
     if (queries.length >= maxQueries) break;
   }
@@ -106,7 +109,11 @@ export function heuristicAnalysis(ledger) {
       ? [`${stats.failed} search(es) failed; their angles are uncovered`]
       : [],
     next_queries: [],
-    stop_reason: 'LLM unavailable — ran the deterministic fallback, one round only',
+    // Without a model we cannot judge which branches are finished, so we close
+    // none and let the deterministic saturation counter stop the run instead.
+    branches_to_close: [],
+    saturation: true,
+    stop_reason: 'LLM unavailable — ran the deterministic fallback, one wave only',
     _degraded: true,
   };
 }

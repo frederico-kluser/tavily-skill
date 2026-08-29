@@ -1,9 +1,13 @@
 #!/usr/bin/env node
-// surf-research-skill — multi-provider web-skill CLI. Routes search/extract/crawl/map/research
-// across Tavily and Parallel AI with automatic key + provider fallback.
+// surf-research-skill — the Brave Search CLI.
+//
+// One backend, one operation: `search` (plus `search-parallel`, which is the
+// same operation fanned out). Key rotation and rate pacing live in
+// src/lib/dispatch.mjs; the "is there a valid Brave key" gate lives in
+// src/lib/preflight.mjs and runs before any command that would touch the API.
 
-import { readFile, writeFile, mkdir, unlink } from 'node:fs/promises';
-import { parseFlags, sleep, clamp, maskKey } from '../src/lib/flags.mjs';
+import { readFile, unlink } from 'node:fs/promises';
+import { parseFlags, assertEnum, numericFlag, maskKey } from '../src/lib/flags.mjs';
 import { dispatch, DispatchError } from '../src/lib/dispatch.mjs';
 import { mapPool } from '../src/lib/pool.mjs';
 import { formatFor } from '../src/lib/format.mjs';
@@ -13,12 +17,14 @@ import { readUsage, USAGE_LOG } from '../src/lib/audit.mjs';
 import { migrateLegacy, loadState, saveStateAtomic } from '../src/lib/state.mjs';
 import { runSetup } from '../src/lib/setup.mjs';
 import { runProjectConfig, formatProjectConfigResult } from '../src/lib/project-config.mjs';
-import { providerFromRequestId } from '../src/lib/providers/index.mjs';
+import { MODES as SEARCH_MODES } from '../src/lib/providers/brave.mjs';
+import { GateError, EXIT_CONFIG, assertProviderReady } from '../src/lib/preflight.mjs';
+import { DEFAULT_SUB_AGENTS, MAX_SUB_AGENTS } from '../src/lib/ai/orchestrator.mjs';
 import { progress, setSilent } from '../src/lib/progress.mjs';
 import { runAiCommand } from '../src/lib/ai/cli.mjs';
 import { runAiSetup } from '../src/lib/ai/setup.mjs';
 
-const VERSION = '7.0.0';
+const VERSION = '8.0.0';
 
 // Catch SIGTERM/SIGINT so a harness-driven kill surfaces a useful message
 // instead of dying silently. This is defense-in-depth: dispatch already
@@ -34,15 +40,21 @@ for (const sig of ['SIGTERM', 'SIGINT']) {
   });
 }
 
-const HELP = `surf-research-skill — multi-provider web skill (Tavily + Parallel AI)
+const HELP = `surf-research-skill — autonomous web research on Brave Search
+
+Brave is the ONLY backend. Every command below either answers from Brave or
+tells you exactly why it cannot. There is no fallback provider and no free
+tier underneath: a missing or invalid Brave key exits 78 before anything runs.
 
 surf-ai (autonomous research — the CLI runs the whole loop):
-  surf-search-normal <question>    ONE round: LLM plans the queries → they all
-                                   run in parallel → LLM writes the answer.
-                                   Fitted inside the agent's bash timeout.
-  surf-search-unlimit <question>   As many rounds as the question needs: after
-                                   each round the LLM lists what is still open
-                                   and launches the next wave. No self-deadline.
+  surf-search-normal <question>    ONE wave: an LLM plans the queries, up to
+                                   --sub-agents of them run at once, and the
+                                   LLM writes the cited answer. Fitted inside
+                                   the agent's bash timeout.
+  surf-search-unlimit <question>   As many waves as the question needs. After
+                                   each wave the analyst says what is still
+                                   open, which branches are finished, and the
+                                   frontier descends into the thin ones.
   ai <question> --mode normal|unlimit      (same thing, explicit mode)
   ai-setup [--key sk-or-v1-...]    Store the OpenRouter key surf-ai needs.
 
@@ -54,68 +66,79 @@ surf-ai (autonomous research — the CLI runs the whole loop):
     --deliverable "<the exact shape of answer you want back>"
     --brief-file <f.json>   {"question","task","goal","insights","deliverable"}
     --ai-model <slug>       override the LLM (default deepseek/deepseek-v4-pro)
-    --max-rounds N          unlimit only (default 6, hard cap 50)
-    --max-queries N         queries per round (normal 6, unlimit 10)
-    --concurrency N         parallel searches (normal 6, unlimit 8)
-    --ledger                append the per-query coverage table
-    --out <file>            also write the answer to a file
+
+  Fan-out and depth:
+    --sub-agents N          simultaneous searches per wave (default ${DEFAULT_SUB_AGENTS}, max ${MAX_SUB_AGENTS}).
+                            Also accepted as --sub-agents=N. This is the ONE
+                            simultaneity budget: it is both the wave width and
+                            the worker-pool width, so the two can never
+                            multiply into a burst your Brave plan cannot serve.
+                            surf reads your plan's real requests-per-second
+                            from Brave's own response headers and paces the
+                            wave to it — asking for more than the plan allows
+                            queues rather than fails, and surf says so.
+    --concurrency N         deprecated alias for --sub-agents.
+    --max-depth N           how far a branch may descend (default 2 normal /
+                            3 unlimit, max 6). Depth 0 is the plan's own
+                            queries; a depth-2 query exists because a depth-1
+                            result raised it.
+    --max-rounds N          wave cap, unlimit only (default 6, hard cap 50)
+    --max-queries N         frontier admissions per wave (>= --sub-agents)
+    --search-mode <fast|normal|slow>   results per query: 5 / 10 / 20
+    --budget-ms N           override the self-budget (0 = unlimited)
+    --ledger                append the coverage table + the rejected frontier
 
 Commands:
   setup                       Interactive onboarding wizard (TTY required)
   project-config [--harness <copilot|claude|pi|all>] [--yes]
                               Write per-project bash-timeout config so the
                               harness used in this project doesn't kill us.
-                              Auto-detects via .github/, .claude/, .pi/.
                               REQUIRED for GH Copilot CLI projects.
   search <q> [<q2> ...]       Web search. Multiple positional args = batch
                               (sequential, partial failures reported inline).
-  search-parallel <q> [q2...] Fan out MANY searches concurrently (bounded
-                              [--queries-file F.json] [--concurrency 6]
-                              worker pool, partial-failure tolerant). Accepts
-                              positional queries and/or a JSON queries file
+  search-parallel <q> [q2...] Fan out MANY searches at once, paced to your
+                              [--queries-file F.json] [--sub-agents N]
+                              Brave plan's rate limit. Accepts positional
+                              queries and/or a JSON queries file
                               ([ "q", {"q":"...","id":"...","sub":"..."} ]).
-  extract <url> [url ...]     Fetch & extract content from URLs
-                              [--urls-file F.json] (JSON array / newline list)
-  crawl <url>                 Crawl a site (Tavily only)
-  map <url>                   Discover URLs on a site (Tavily only)
-  research <topic>            Sync deep research (~50s budget)
-                              [--model mini|auto|pro|ultra] or [--processor <tier>]
-                              (tier bypasses --model: lite|base|core|core2x|
-                              pro|ultra|ultra2x|ultra4x|ultra8x, any with
-                              a -fast suffix — see references/parallel-api.md)
-  research-start <topic>      Start async research; returns request_id
-                              [--model ...] or [--processor <tier>] (see above)
-  research-poll <request_id>  Poll a research job
-  usage --provider <name>     Account usage (per provider)
   cache-clear                 Purge response cache
-  cost [--reset]              Local credit ledger
+  cost [--reset]              Local request ledger
   keys <add|remove|list|reset|clear> [...]
 
-Global flags:
-  --provider <tavily|parallel|brave>  Force provider, disables fallback
-  --mode <fast|normal|slow>      Search tier (per-provider mapping):
-                                   fast   = Tavily depth=fast   / Brave count=5
-                                   normal = Tavily depth=basic  / Brave count=10 (default)
-                                   slow   = Tavily depth=advanced / Brave count=20
-                                   Parallel ignores (single mode).
-  --no-fallback                  Stay on default provider, no cross-provider fallback
-  --no-cache                     Skip response cache
-  --json                         Print normalized envelope as JSON
-  --raw-json                     Print raw provider response (bypasses cache)
-  --confirm-expensive            Allow operations estimated > 10 credits
-  --no-budget                    Disable the self-budget abort: let calls run
-                                   to the provider's per-request ceiling instead
-                                   of the detected harness bash timeout. Use ONLY
-                                   on harnesses with NO bash timeout (e.g. Pi
-                                   core). Same as SURF_NO_TIMEOUT=1.
-  --quiet                        Silence progress logs (stderr)
-  --help, -h                     Show this help
-  --version, -v                  Show version
+Search flags (all of these now actually reach Brave — several used to be
+accepted and silently discarded):
+  --mode <fast|normal|slow>   Results per query: 5 / 10 / 20. Default normal.
+  --max N                     Explicit result count, 1-20. Overrides --mode.
+  --offset N                  Page index, 0-9. Brave caps pagination there;
+                              beyond ~120 results the well runs dry, so depth
+                              comes from asking different questions instead.
+  --time <day|week|month|year>        → Brave freshness (pd/pw/pm/py)
+  --start-date / --end-date YYYY-MM-DD → freshness date range (beats --time)
+  --domains a.com,b.com       Restrict to these sites (OR-grouped site: ops)
+  --exclude c.com             Exclude a site (-site:)
+  --country XX · --search-lang · --ui-lang · --safesearch <off|moderate|strict>
+  --goggles <url>             Brave Goggles re-ranking
+  --result-filter <list>      web,news,discussions,faq,…
+  --json / --raw-json / --no-cache / --quiet / --confirm-expensive
+  --no-budget                 Disable the self-budget abort. Use ONLY on a
+                              harness with NO bash timeout (e.g. Pi core).
+
+REMOVED IN v8 (Brave has no equivalent on the Search plan):
+  extract · crawl · map · research · research-start · research-poll · usage
+  Brave's /web/search returns ranked links and snippets, never page content.
+  Use \`search\` and follow the URLs with your own reader. (Brave does ship an
+  /llm/context endpoint that returns extracted text, but it is plan-gated —
+  a key without it answers HTTP 400 OPTION_NOT_IN_PLAN.)
+
+Exit codes:
+  0   the command worked
+  1   the operation ran and failed (searches failed, nothing retrieved)
+  2   you typed the command wrong (usage / bad flag value)
+  78  configuration is broken — no valid Brave key. Retrying will not help.
 
 Progress logs (stderr):
-  surf-research-skill emits one line per event to stderr, e.g.:
-    [surf 17:58:12] ▸ search → tavily (key #0)
-    [surf 17:58:14] ✓ search tavily 1234ms (2 credits)
+    [surf 17:58:12] ▸ search → brave (key #0)
+    [surf 17:58:14] ✓ search brave 1234ms (1 credits)
   Format is stable for agent parsing. Use --quiet or SURF_QUIET=1 to silence.
 
 Examples:
@@ -124,22 +147,16 @@ Examples:
     --task "adding structured LLM calls to a CLI" \\
     --goal "know which request fields to send and what breaks" \\
     --insights "I think response_format.json_schema.strict works on DeepSeek"
-  surf-search-unlimit "best way to cap concurrency in Node without deps" --max-rounds 4
-  surf-research-skill setup
+  surf-search-unlimit "how do teams cap LLM spend in CI" --sub-agents=10 --max-depth 3
   surf-research-skill search "claude 4.7 release notes" --max 3
-  surf-research-skill search "topic A" "topic B" "topic C"      # batch (3 queries)
-  surf-research-skill search-parallel "topic A" "topic B" "topic C" --concurrency 6
-  surf-research-skill search-parallel --queries-file q.json --concurrency 8 --no-budget --json
-  surf-research-skill extract https://docs.anthropic.com/...
-  surf-research-skill research-start "compare X and Y" --model pro --confirm-expensive
-  surf-research-skill keys add --provider tavily tvly-AAA tvly-BBB tvly-CCC   # many at once
-  cat keys.txt | surf-research-skill keys add --provider tavily --stdin       # one key per line
+  surf-research-skill search "postgres HNSW limits" --domains postgresql.org --time year
+  surf-research-skill search-parallel "topic A" "topic B" --sub-agents=6
+  surf-research-skill keys add --provider brave BSA-AAA BSA-BBB   # many at once
   surf-research-skill keys list
 
-Need free, no-key search? Use the separate surf-free-skill (Wikipedia +
-DuckDuckGo). surf-research-skill itself requires an API key.
-Key & state are stored in ~/.config/surf/keys.json (chmod 600).
-Docs: ~/.agents/skills/surf-research-agent-skill/SKILL.md`;
+Keys & state:   ~/.config/surf/keys.json (chmod 600)
+Brave API docs: references/brave-api.md · https://api-dashboard.search.brave.com
+Skill docs:     ~/.agents/skills/surf-research-agent-skill/SKILL.md`;
 
 function die(msg, code = 1) {
   process.stderr.write(`❌ Error: ${msg}\n`);
@@ -171,29 +188,44 @@ function emitResult(envelope, flags) {
 }
 
 function buildSearchArgs(query, flags) {
-  // --mode is the canonical flag. --depth (Tavily-ism) is still accepted as
-  // legacy alias; if neither is set, default to depth='advanced' (Tavily) which
-  // also resolves to mode='slow' on Brave.
+  // Every one of these used to be raw passthrough. A typo in any of them made
+  // Brave answer 422, which the old adapter read as "bad key" and used to burn
+  // the entire key ring. Validate here, once, for both the single and the
+  // batch/parallel paths.
+  assertEnum('--mode', flags.mode, SEARCH_MODES);
+  assertEnum('--depth', flags.depth, ['basic', 'advanced', 'fast', 'ultra-fast']);
+  assertEnum('--topic', flags.topic, ['general', 'news']);
+  assertEnum('--time', flags.time, ['day', 'week', 'month', 'year']);
+  assertEnum('--safesearch', flags.safesearch, ['off', 'moderate', 'strict']);
+  if (flags.mode && flags.depth) {
+    die(`--mode and --depth mean the same thing; pass only one (--depth is the deprecated spelling).`, 2);
+  }
+  if (flags.country && !/^[A-Za-z]{2}$/.test(String(flags.country))) {
+    die(`--country must be a 2-letter code (got '${flags.country}')`, 2);
+  }
+
+  // NOTE: no implicit default is injected. The old code substituted
+  // depth:'advanced' whenever --mode was absent, which silently ran every
+  // search at the widest tier while --help promised 'normal'.
   return {
     query,
     mode: flags.mode,
-    depth: flags.depth || (flags.mode ? undefined : 'advanced'),
+    depth: flags.depth,
     max: flags.max,
+    offset: flags.offset,
     topic: flags.topic,
     time: flags.time,
     startDate: flags['start-date'],
     endDate: flags['end-date'],
+    freshness: flags.freshness,
     domains: flags.domains,
     excludeDomains: flags.exclude,
     country: flags.country,
-    answer: flags.answer,
-    raw: flags.raw,
-    images: flags.images,
-    imageDesc: flags['image-desc'],
-    favicon: flags.favicon,
-    auto: flags.auto,
-    exactMatch: flags['exact-match'],
-    processor: flags.processor,
+    searchLang: flags['search-lang'],
+    uiLang: flags['ui-lang'],
+    safesearch: flags.safesearch,
+    resultFilter: flags['result-filter'],
+    goggles: flags.goggles,
   };
 }
 
@@ -300,7 +332,8 @@ function emitBatchResult(payload, flags) {
     (r.results || []).forEach((it, i) => {
       md += `### [${i + 1}] ${it.title || it.url}\n${it.url}\n`;
       if (it.score != null) md += `*score: ${typeof it.score === 'number' ? it.score.toFixed(2) : it.score}*\n`;
-      if (it.published_date) md += `*published: ${it.published_date}*\n`;
+      const when = it.published_date || it.age_text;
+      if (when) md += `*published: ${when}*\n`;
       const content = it.content || '';
       md += `\n${content.length > 1500 ? content.slice(0, 1500) + '…' : content}\n\n`;
     });
@@ -327,16 +360,6 @@ async function readListFile(file, label) {
   }
 }
 
-async function readUrlsFile(file) {
-  const parsed = await readListFile(file, '--urls-file');
-  const urls = [];
-  for (const el of parsed) {
-    if (typeof el === 'string') urls.push(el.trim());
-    else if (el && typeof el === 'object' && (el.url || el.href)) urls.push(String(el.url || el.href));
-  }
-  return urls.filter(Boolean);
-}
-
 // Build the query work-list from positional args + an optional --queries-file.
 // Each item is { id, q, sub } so output can be grouped by sub-question.
 async function collectParallelQueries(pos, flags) {
@@ -358,18 +381,31 @@ async function collectParallelQueries(pos, flags) {
   return items.filter(it => typeof it.q === 'string' && it.q.trim());
 }
 
-function resolveConcurrency(v) {
-  const n = Number(v);
-  if (!Number.isFinite(n) || n < 1) return 6; // default
-  return clamp(Math.floor(n), 1, 16);
+/**
+ * The one simultaneity budget, shared with the surf-ai path so the two fan-out
+ * code paths cannot drift. --concurrency stays as a deprecated alias.
+ */
+function resolveSubAgents(flags) {
+  const explicit = numericFlag(flags['sub-agents'], {
+    name: '--sub-agents', min: 1, max: MAX_SUB_AGENTS, fallback: undefined,
+  });
+  if (explicit !== undefined) return explicit;
+  const legacy = numericFlag(flags.concurrency, {
+    name: '--concurrency', min: 1, max: MAX_SUB_AGENTS, fallback: undefined,
+  });
+  if (legacy !== undefined) {
+    progress.warn(`--concurrency is deprecated; use --sub-agents=${legacy} (same meaning).`);
+    return legacy;
+  }
+  return DEFAULT_SUB_AGENTS;
 }
 
 async function cmdSearchParallel(pos, flags) {
   const items = await collectParallelQueries(pos, flags);
   if (!items.length) {
-    die('Usage: surf-research-skill search-parallel "q1" "q2" ... [--queries-file F.json] [--concurrency 6] [--no-budget]');
+    die('Usage: surf-research-skill search-parallel "q1" "q2" ... [--queries-file F.json] [--sub-agents N] [--no-budget]');
   }
-  const concurrency = resolveConcurrency(flags.concurrency);
+  const concurrency = resolveSubAgents(flags);
 
   // Load shared state ONCE and suppress per-call persistence: concurrent
   // dispatches mutate this one object (single-threaded JS → no torn writes),
@@ -379,7 +415,7 @@ async function cmdSearchParallel(pos, flags) {
   state._inMemory = true;
 
   progress.start(
-    `parallel: ${items.length} queries · concurrency ${concurrency}` +
+    `parallel: ${items.length} queries · up to ${concurrency} at once` +
     (flags['no-budget'] ? ' · no-budget' : '')
   );
   const t0 = Date.now();
@@ -475,146 +511,14 @@ function emitParallelResult(payload, flags) {
       (r.results || []).forEach((it, i) => {
         md += `#### [${i + 1}] ${it.title || it.url}\n${it.url}\n`;
         if (it.score != null) md += `*score: ${typeof it.score === 'number' ? it.score.toFixed(2) : it.score}*\n`;
-        if (it.published_date) md += `*published: ${it.published_date}*\n`;
+        const when = it.published_date || it.age_text;
+        if (when) md += `*published: ${when}*\n`;
         const content = it.content || '';
         md += `\n${content.length > 1200 ? content.slice(0, 1200) + '…' : content}\n\n`;
       });
     }
   }
   out(md);
-}
-
-async function cmdExtract(pos, flags) {
-  const urls = [...pos];
-  if (flags['urls-file']) {
-    urls.push(...await readUrlsFile(flags['urls-file']));
-  }
-  if (!urls.length) die('Usage: surf-research-skill extract <url1> [url2 ...] | --urls-file F.json');
-  if (urls.length > 20) die(`extract supports at most 20 URLs per call (got ${urls.length}). Split into batches.`);
-  const args = {
-    urls,
-    depth: flags.depth || 'basic',
-    format: flags.format || 'markdown',
-    images: flags.images,
-    favicon: flags.favicon,
-    query: flags.query,
-    chunks: flags.chunks,
-    extractTimeout: flags['extract-timeout'],
-  };
-  emitResult(await dispatch('extract', args, flags), flags);
-}
-
-async function cmdCrawl(pos, flags) {
-  const url = pos[0];
-  if (!url) die('Usage: surf-research-skill crawl <url> [flags]');
-  const args = {
-    url,
-    maxDepth: flags['max-depth'],
-    maxBreadth: flags['max-breadth'],
-    limit: flags.limit,
-    instructions: flags.instructions,
-    selectPaths: flags['select-paths'],
-    selectDomains: flags['select-domains'],
-    excludePaths: flags['exclude-paths'],
-    excludeDomains: flags['exclude-domains'],
-    allowExternal: flags['allow-external'],
-    images: flags.images,
-    categories: flags.categories,
-    extractDepth: flags['extract-depth'] || 'basic',
-    format: flags.format || 'markdown',
-    query: flags.query,
-    chunks: flags.chunks,
-    timeout: flags.timeout,
-  };
-  emitResult(await dispatch('crawl', args, flags), flags);
-}
-
-async function cmdMap(pos, flags) {
-  const url = pos[0];
-  if (!url) die('Usage: surf-research-skill map <url> [flags]');
-  const args = {
-    url,
-    maxDepth: flags['max-depth'],
-    maxBreadth: flags['max-breadth'],
-    limit: flags.limit,
-    instructions: flags.instructions,
-    selectPaths: flags['select-paths'],
-    selectDomains: flags['select-domains'],
-    excludePaths: flags['exclude-paths'],
-    excludeDomains: flags['exclude-domains'],
-    allowExternal: flags['allow-external'],
-    categories: flags.categories,
-    timeout: flags.timeout,
-  };
-  emitResult(await dispatch('map', args, flags), flags);
-}
-
-async function cmdResearchStart(pos, flags) {
-  const input = pos.join(' ').trim();
-  if (!input) die('Usage: surf-research-skill research-start "topic" [--model mini|auto|pro]');
-  const args = {
-    input,
-    model: flags.model || 'auto',
-    citationFormat: flags.citations || 'numbered',
-    outputSchema: flags.schema ? JSON.parse(await readFile(flags.schema, 'utf8')) : undefined,
-    processor: flags.processor,
-  };
-  const envelope = await dispatch('research-start', args, flags);
-  await persistResearchHandle(envelope);
-  emitResult(envelope, flags);
-}
-
-async function cmdResearchPoll(pos, flags) {
-  const id = pos[0];
-  if (!id) die('Usage: surf-research-skill research-poll <request_id>');
-  const decoded = providerFromRequestId(id);
-  if (!decoded) die(`unknown request_id prefix in '${id}' (expected tvly:... or pllx:...)`);
-  const envelope = await dispatch('research-poll', {}, { ...flags, __requestId: id });
-  if (envelope.data.status === 'completed' || envelope.data.status === 'failed') {
-    try { await unlink(`/tmp/surf-${id.replace(':', '_')}.json`); } catch {}
-  }
-  emitResult(envelope, flags);
-}
-
-async function cmdResearch(pos, flags) {
-  const input = pos.join(' ').trim();
-  if (!input) die('Usage: surf-research-skill research "topic"');
-  const model = flags.model || 'mini';
-  if (model === 'pro' || model === 'ultra') {
-    die(`Refusing sync research with model=${model} (would exceed timeout). Use 'surf-research-skill research-start' + 'surf-research-skill research-poll'.`);
-  }
-  const startArgs = {
-    input,
-    model,
-    citationFormat: flags.citations || 'numbered',
-    processor: flags.processor,
-  };
-  const start = await dispatch('research-start', startArgs, flags);
-  await persistResearchHandle(start);
-  const id = start.data.request_id;
-  const deadline = Date.now() + 50_000;
-  while (Date.now() < deadline) {
-    await sleep(5000);
-    const poll = await dispatch('research-poll', {}, { ...flags, __requestId: id });
-    if (poll.data.status === 'completed' || poll.data.status === 'failed') {
-      try { await unlink(`/tmp/surf-${id.replace(':', '_')}.json`); } catch {}
-      emitResult(poll, flags);
-      return;
-    }
-  }
-  out(`**Research did not finish in 50s.** Continue with: \`surf-research-skill research-poll ${id}\``);
-}
-
-async function persistResearchHandle(envelope) {
-  try {
-    const id = envelope.data.request_id;
-    await mkdir('/tmp', { recursive: true }).catch(() => {});
-    await writeFile(`/tmp/surf-${id.replace(':', '_')}.json`, JSON.stringify({
-      started: Date.now(),
-      provider: envelope.provider,
-      request_id: id,
-    }));
-  } catch {}
 }
 
 // --- surf-ai (autonomous research loop) ---
@@ -624,11 +528,6 @@ async function persistResearchHandle(envelope) {
 async function cmdAi(pos, flags, forcedMode) {
   const code = await runAiCommand({ pos, flags, mode: forcedMode });
   if (code) process.exitCode = code;
-}
-
-async function cmdUsage(_pos, flags) {
-  if (!flags.provider) die(`Usage: surf-research-skill usage --provider <tavily|parallel>`);
-  emitResult(await dispatch('usage', {}, flags), flags);
 }
 
 async function cmdCacheClear() {
@@ -739,30 +638,47 @@ const { pos, flags } = parseFlags(rest);
 // Wire --quiet before any progress event fires.
 if (flags.quiet) setSilent(true);
 
-// Auto-launch setup wizard on first TTY use when no keys are configured.
-// Commands that don't need keys (setup, keys, project-config, help, etc.)
-// are excluded.
-// surf-ai commands are excluded too: they degrade to the keyless tier on their
-// own, so hijacking the run with a wizard would be wrong.
+// Verbs that existed up to v7 and are gone. Recognised only so the error can
+// say WHY, instead of "unknown command".
+const REMOVED_VERBS = new Set([
+  'extract', 'crawl', 'map', 'research', 'research-start', 'research-poll', 'usage',
+]);
+
+// THE GATE. Every command that will touch Brave proves a valid key first.
+//
+// This replaces a TTY-only auto-wizard that (a) never ran for the surf-ai
+// commands, because those were expected to degrade to a keyless tier on their
+// own, and (b) was satisfied by a Tavily key. Now: no valid Brave key, no run.
+// In a terminal we still offer the wizard, because a human who can fix it
+// right now should be allowed to.
 const NO_KEYS_NEEDED = new Set([
   'setup', 'keys', 'project-config',
-  'cache-clear', 'cost',
-  'ai', 'ai-setup', 'surf-search-normal', 'surf-search-unlimit',
+  'cache-clear', 'cost', 'ai-setup',
   '--help', '-h', '--version', '-v',
 ]);
-if (!NO_KEYS_NEEDED.has(cmd) && process.stdin.isTTY) {
+if (!NO_KEYS_NEEDED.has(cmd) && !REMOVED_VERBS.has(cmd)) {
+  const state = await loadState();
   try {
-    const { loadState, SEARCH_PROVIDERS } = await import('../src/lib/state.mjs');
-    const state = await loadState();
-    const hasAny = SEARCH_PROVIDERS.some(p => ((state[p] && state[p].keys) || []).length);
-    if (!hasAny) {
-      process.stderr.write('No keys configured. Launching setup wizard…\n\n');
-      await runSetup();
-      process.stderr.write('\n— Resuming your command —\n\n');
+    await assertProviderReady(state, 'brave');
+  } catch (e) {
+    if (!(e instanceof GateError)) throw e;
+    if (!process.stdin.isTTY) {
+      process.stderr.write(e.message + '\n');
+      process.exit(EXIT_CONFIG);
     }
-  } catch {
-    // If anything goes wrong with the auto-wizard, fall through to the
-    // normal command which will produce its own actionable error.
+    process.stderr.write(e.message + '\n\n— Launching setup so you can fix it now —\n\n');
+    try {
+      await runSetup();
+    } catch {
+      process.exit(EXIT_CONFIG);
+    }
+    try {
+      await assertProviderReady(await loadState(), 'brave');
+      process.stderr.write('\n— Resuming your command —\n\n');
+    } catch (again) {
+      process.stderr.write((again.message || String(again)) + '\n');
+      process.exit(EXIT_CONFIG);
+    }
   }
 }
 
@@ -777,13 +693,6 @@ try {
 
     case 'search': await cmdSearch(pos, flags); break;
     case 'search-parallel': await cmdSearchParallel(pos, flags); break;
-    case 'extract': await cmdExtract(pos, flags); break;
-    case 'crawl': await cmdCrawl(pos, flags); break;
-    case 'map': await cmdMap(pos, flags); break;
-    case 'research': await cmdResearch(pos, flags); break;
-    case 'research-start': await cmdResearchStart(pos, flags); break;
-    case 'research-poll': await cmdResearchPoll(pos, flags); break;
-    case 'usage': await cmdUsage(pos, flags); break;
     case 'cache-clear': await cmdCacheClear(); break;
     case 'cost': await cmdCost(pos, flags); break;
     case 'keys': await cmdKeys(pos, flags); break;
@@ -794,9 +703,25 @@ try {
       break;
     }
     default:
+      if (REMOVED_VERBS.has(cmd)) {
+        die(
+          `'${cmd}' was removed in v8.0.0. Brave Search is a SERP: /web/search returns ranked ` +
+          `links and snippets, never page content, and has no crawl, site-map or async-research ` +
+          `endpoint. Use 'search' and follow the returned URLs with your own reader.`,
+          2,
+        );
+      }
       die(`Unknown command: ${cmd}. Try 'surf-research-skill --help'.`);
   }
 } catch (e) {
+  if (e instanceof GateError) {
+    process.stderr.write(e.message + '\n');
+    process.exit(EXIT_CONFIG);
+  }
+  if (e && e.code === 'FLAG_USAGE') {
+    process.stderr.write(`❌ Error: ${e.message}\n`);
+    process.exit(2);
+  }
   if (e instanceof DispatchError) {
     process.stderr.write(`❌ Error [${e.code}]: ${e.message}\n`);
     if (e.code === 'NoProviderAvailable' && process.stdin.isTTY) {
