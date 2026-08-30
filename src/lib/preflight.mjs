@@ -18,6 +18,13 @@
 // bad key both answer 422 and are told apart by `error.code`. The verdict is
 // still cached for 7 days, because the probe consumes a slot in Brave's
 // 1-second rate window even though it costs no money.
+//
+// WHAT MAY BE CACHED: only Brave saying "this token is bad". A dropped
+// connection, a DNS failure, a timeout or a 5xx from Brave's own servers are
+// facts about the network, not about the key — and a 7-day cache entry made
+// from one of those turns a three-second wifi blip into a week of exit 78 that
+// survives every reboot. Those failures are recorded NOWHERE: the key stays
+// unvalidated and the next run re-probes it (for free). See resolveGate.
 
 import {
   loadState, saveStateAtomic, cooldownActive, nextResetIso,
@@ -34,6 +41,10 @@ export const GATE = {
   COOLING: 'cooling',
   UNVALIDATED: 'unvalidated',
   INVALID: 'invalid',
+  // "We could not find out." Distinct from INVALID on purpose: INVALID means
+  // Brave rejected the token, UNREACHABLE means nobody answered. Only the
+  // first is a fact about the key, and only the first is ever cached.
+  UNREACHABLE: 'unreachable',
 };
 
 const CODE_FOR = {
@@ -41,6 +52,8 @@ const CODE_FOR = {
   [GATE.BURNED]: 'BraveKeyBurned',
   [GATE.COOLING]: 'BraveKeyCooling',
   [GATE.INVALID]: 'BraveKeyInvalid',
+  // Same BraveKey* family, so a caller matching /^BraveKey/ still recognises it.
+  [GATE.UNREACHABLE]: 'BraveKeyUnverified',
 };
 
 export class GateError extends Error {
@@ -54,17 +67,58 @@ export class GateError extends Error {
 }
 
 /**
+ * The provider section as the gate is allowed to READ it.
+ *
+ * loadState() normalises keys.json, but the gate is also a library entry point
+ * (dispatch takes runCtx.state) and every internal caller that spreads a
+ * partial object reaches it too. A gate that throws is worse than a gate that
+ * decides — it fails open or closed depending on who catches it — so every
+ * list is coerced here, once. Reads only: writes still go through state.mjs,
+ * which repairs the same fields on its own.
+ */
+function readProvider(state, provider) {
+  const p = state && typeof state === 'object' ? state[provider] : null;
+  if (!p || typeof p !== 'object') return null;
+  return {
+    // A non-array `keys` (a hand-edited string) has a .length, which is why the
+    // emptiness check alone never caught it.
+    keys: Array.isArray(p.keys) ? p.keys : [],
+    burned: Array.isArray(p.burned) ? p.burned : [],
+    cooldowns: Array.isArray(p.cooldowns) ? p.cooldowns : [],
+  };
+}
+
+/** The burned key indices of an already-coerced section. */
+function burnedIndexes(p) {
+  return new Set(p.burned.filter(b => b && typeof b === 'object').map(b => b.index));
+}
+
+/**
+ * Does this failed validate() prove anything about the KEY?
+ *
+ * Only one thing does: Brave rejecting the subscription token (kind 'auth' —
+ * a 401/403/402 or a SUBSCRIPTION_TOKEN_INVALID body). Everything else —
+ * 'network' (dropped connection, DNS, timeout), 'server_5xx' (Brave is down),
+ * or an unattributed status from a captive portal or a corporate proxy — is
+ * evidence about the path to Brave. Whitelist, not blacklist: an unknown
+ * failure kind must not be able to convict a working key.
+ */
+function provesKeyBad(r) {
+  return !!r && r.valid === false && r.kind === 'auth';
+}
+
+/**
  * What we know about this provider's keys WITHOUT touching the network.
  * Returns { verdict, index, detail } where `index` is the key to use when the
  * verdict is READY or UNVALIDATED.
  */
 export function gateStatus(state, provider = SEARCH_PROVIDER) {
-  const p = state[provider];
+  const p = readProvider(state, provider);
   if (!p || !p.keys.length) {
     return { verdict: GATE.MISSING, index: -1, detail: 'no key configured' };
   }
 
-  const burnedIdx = new Set(p.burned.map(b => b.index));
+  const burnedIdx = burnedIndexes(p);
   const now = Date.now();
   const live = p.keys.map((_, i) => i).filter(i => !burnedIdx.has(i));
 
@@ -114,7 +168,8 @@ export function gateStatus(state, provider = SEARCH_PROVIDER) {
  * @param {object} [opts]
  * @param {boolean} [opts.allowLive=true]  set false for offline callers (doctor --offline)
  * @param {boolean} [opts.persist=true]    write the cached verdict back to keys.json
- * @returns {Promise<{verdict, index, detail}>}
+ * @returns {Promise<{verdict, index, detail}>}  verdict READY | INVALID | UNREACHABLE
+ *   (or whatever gateStatus already decided offline)
  */
 export async function resolveGate(state, provider = SEARCH_PROVIDER, opts = {}) {
   const { allowLive = true, persist = true } = opts;
@@ -127,8 +182,8 @@ export async function resolveGate(state, provider = SEARCH_PROVIDER, opts = {}) 
     return { ...status, verdict: GATE.READY, detail: 'provider exposes no validator' };
   }
 
-  const p = state[provider];
-  const burnedIdx = new Set(p.burned.map(b => b.index));
+  const p = readProvider(state, provider) || { keys: [], burned: [], cooldowns: [] };
+  const burnedIdx = burnedIndexes(p);
   const now = Date.now();
   const candidates = p.keys
     .map((_, i) => i)
@@ -136,24 +191,60 @@ export async function resolveGate(state, provider = SEARCH_PROVIDER, opts = {}) 
 
   let lastReason = 'invalid token';
   let lastStatus = null;
+  let unreachable = null;   // the last probe that never got an answer
+  let recorded = false;     // did we learn anything worth writing to disk?
   for (const i of candidates) {
     const cached = getValidation(state, provider, i);
     if (cached && cached.ok) return { verdict: GATE.READY, index: i, detail: `validated ${cached.at}` };
     if (cached && !cached.ok) { lastReason = cached.reason || lastReason; continue; }
 
     const r = await adapter.validate(p.keys[i]);
-    setValidation(state, provider, i, {
-      ok: r.valid, status: r.statusCode, reason: r.valid ? null : (r.error || r.kind),
-    });
+
     if (r.valid) {
+      setValidation(state, provider, i, { ok: true, status: r.statusCode, reason: null });
       if (persist) { try { await saveStateAtomic(state); } catch {} }
       return { verdict: GATE.READY, index: i, detail: r.free ? 'validated live (free probe)' : 'validated live' };
     }
+
+    if (!provesKeyBad(r)) {
+      // THE ONE THAT COST A WEEK. Caching ok:false here would make gateStatus
+      // answer INVALID and would make the `continue` above skip this key for
+      // the whole VALIDATION_TTL_MS (7 days) — persisted, so the reboot that
+      // fixes the wifi does not fix this. Record NOTHING: the key stays
+      // unvalidated and the next run probes it again. Being wrong this way
+      // costs one free round-trip; being wrong the other way costs a week of
+      // exit 78 on a key that works.
+      unreachable = {
+        index: i,
+        reason: r.error || r.kind || 'the probe got no answer',
+        status: r.statusCode ?? null,
+      };
+      continue;
+    }
+
+    setValidation(state, provider, i, {
+      ok: false, status: r.statusCode, reason: r.error || r.kind,
+    });
+    recorded = true;
     lastReason = r.error || r.kind || lastReason;
     lastStatus = r.statusCode;
   }
 
-  if (persist) { try { await saveStateAtomic(state); } catch {} }
+  // Only write when a verdict actually changed. An outage must not rewrite
+  // keys.json at all — there is nothing new in it, and the write is one more
+  // chance to lose a key to a concurrent writer.
+  if (recorded && persist) { try { await saveStateAtomic(state); } catch {} }
+
+  // One unjudged key outranks any number of judged-bad ones: as long as a key
+  // was never actually answered for, "every key failed validation" is a claim
+  // we cannot make.
+  if (unreachable) {
+    return {
+      verdict: GATE.UNREACHABLE, index: -1, status: unreachable.status,
+      detail: `could not reach ${(getProvider(provider) || {}).label || provider} to check key #${unreachable.index} `
+        + `(${unreachable.reason}) — no verdict was cached, so the next run checks again`,
+    };
+  }
   return { verdict: GATE.INVALID, index: -1, detail: lastReason, status: lastStatus };
 }
 
@@ -170,6 +261,7 @@ export function formatGate(verdict, detail, provider = SEARCH_PROVIDER) {
     [GATE.BURNED]: `every ${label} key on this machine is burned.`,
     [GATE.COOLING]: `every ${label} key is rate-limited right now.`,
     [GATE.INVALID]: `the configured ${label} key was rejected by the API.`,
+    [GATE.UNREACHABLE]: `surf could not reach ${label} to check the key.`,
   }[verdict] || `no usable ${label} key.`;
 
   const fix = {
@@ -189,10 +281,23 @@ export function formatGate(verdict, detail, provider = SEARCH_PROVIDER) {
       `     each key carries its own per-second rate budget.`,
     ],
     [GATE.INVALID]: [
-      `Fix: surf-research-skill keys remove --provider ${provider} <index>`,
-      `     then add a working one. Validation costs nothing, so a key that`,
-      `     fails here will fail every search too.`,
+      `This verdict is cached (up to 7 days), so re-check it before you delete`,
+      `anything — the key itself may be fine.`,
+      `Fix: surf-research-skill keys reset --provider ${provider}`,
+      `     Clears the cached verdict and the cooldowns, so the next command`,
+      `     re-tests the key live. Testing costs nothing.`,
+      `If it is rejected again after that, the key really is dead:`,
+      `     surf-research-skill keys remove --provider ${provider} <index>`,
+      `     then add a working one.`,
       signup ? `Get a key: ${signup}` : '',
+    ],
+    [GATE.UNREACHABLE]: [
+      `Nothing was decided about your key and nothing was cached: the probe`,
+      `never got an answer, so the next command tests it again for free.`,
+      `Fix: check this machine's network (DNS, proxy, VPN, captive portal),`,
+      `     or wait out the ${label} outage, then re-run the same command.`,
+      `     surf doctor   — re-checks the gate without spending a search.`,
+      `Do NOT remove the key on account of this message. It was never judged.`,
     ],
   }[verdict] || [];
 
