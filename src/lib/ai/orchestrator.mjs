@@ -256,18 +256,38 @@ export async function runSurfAi(ctx, opts = {}) {
   );
 
   // ---------------------------------------------------------------- WAVES ---
+  // Every node the run has ADMITTED, by id — the lineage map. It has to
+  // outlive the wave that created it: the analyst routinely names a parent from
+  // an earlier wave, and resolving parents against the CURRENT wave only made
+  // every such follow-up restart at depth 1. That silently defeated --max-depth
+  // — the flag the caller uses to cap how deep (and how expensive) a run gets.
+  const nodesById = new Map();
+  const remember = (res) => {
+    if (res && res.admitted && res.node) nodesById.set(res.node.id, res.node);
+    return res;
+  };
+
   // Seed the frontier from the plan. Every seed is a depth-0 breadth node.
   for (const q of plan.queries) {
-    frontier.admit(makeNode({
+    remember(frontier.admit(makeNode({
       id: q.id, q: q.q, sub: q.sub, category: q.category,
       depth: 0, priority: q.priority ?? 0.6, kind: 'breadth',
-    }));
+    })));
   }
 
   let round = 0;
   let analysis = null;
-  let stopReason = 'completed the planned wave';
-  let drySpells = 0;
+  // Left unset on purpose. It used to start at 'completed the planned wave',
+  // which was simply false whenever the loop never ran: a plan rejected in full
+  // at the admission gate reported rounds: 0 and a completed wave in the same
+  // breath, and the agent reading that concluded the research was done.
+  let stopReason = null;
+  // TWO stop conditions, because they are two different events. They shared one
+  // counter, so "this wave found a new source" cleared the "this wave admitted
+  // nothing" tally and vice versa — neither dry spell could ever reach 2, and
+  // the only thing that ever stopped a stubborn run was the 50-wave cap.
+  let wavesWithoutNewSources = 0;
+  let wavesWithoutAdmission = 0;
 
   while (round < maxRounds && frontier.size) {
     round++;
@@ -334,13 +354,13 @@ export async function runSurfAi(ctx, opts = {}) {
     if (round >= maxRounds) { stopReason = `hit the wave cap (${maxRounds})`; break; }
     if (!unlimitedTime && remaining() < 20_000) { stopReason = 'ran out of time budget'; break; }
     if (newSources === 0) {
-      drySpells++;
-      if (drySpells >= 2) {
+      wavesWithoutNewSources++;
+      if (wavesWithoutNewSources >= 2) {
         stopReason = 'two consecutive waves returned no new sources (saturated)';
         break;
       }
     } else {
-      drySpells = 0;
+      wavesWithoutNewSources = 0;
     }
 
     // ------------------------------------------------------------ ANALYZE ---
@@ -363,7 +383,7 @@ export async function runSurfAi(ctx, opts = {}) {
         timeoutMs: unlimitedTime ? 180_000 : Math.max(10_000, remaining() * 0.3),
         temperature: 0.2,
       });
-      analysis = r.value || null;
+      analysis = normalizeAnalysis(r.value);
     } catch (e) {
       const why = e instanceof AiUnavailableError ? e.message : (e.message || String(e));
       progress.warn(`surf-ai analyst unavailable (${why}) — stopping after wave ${round}`);
@@ -373,35 +393,58 @@ export async function runSurfAi(ctx, opts = {}) {
       break;
     }
 
-    for (const sub of (analysis && analysis.branches_to_close) || []) {
+    // A reply that is valid JSON but not an object — `false`, `0`, `""`, an
+    // array, a bare string — used to survive the `|| null` guard and then blow
+    // up on `analysis.open_points` further down. That crash lands AFTER the
+    // wave's Brave requests are paid for: the user buys the searches and
+    // receives a stack trace. Stop cleanly and synthesize what the wave found.
+    if (!analysis) {
+      progress.warn(`surf-ai: the analyst returned a reply that is not an analysis — stopping after wave ${round} and synthesizing what we have`);
+      diagnostics.degraded.push({ stage: 'analyze', reason: 'the model returned a reply that is not an analysis object' });
+      stopReason = 'the analyst returned an unusable reply; stopped after this wave';
+      break;
+    }
+
+    // normalizeAnalysis guarantees a string array here. It used to be whatever
+    // the model said: `5` made this a TypeError, and `"sq1"` was iterated
+    // character by character, permanently closing the branches 's', 'q' and '1'.
+    for (const sub of analysis.branches_to_close) {
       const dropped = frontier.closeBranch(sub, 'the analyst reported it answered');
       if (dropped) progress.info(`surf-ai: closed branch '${sub}' (${dropped} pending quer${dropped === 1 ? 'y' : 'ies'} dropped)`);
     }
 
-    if (analysis && analysis.resolved) {
+    if (analysis.resolved) {
       stopReason = analysis.stop_reason || 'the analyst judged the question resolved';
       progress.info(`surf-ai: resolved after wave ${round} (confidence: ${analysis.confidence || 'n/a'})`);
       break;
     }
-    if (analysis && analysis.saturation) {
+    if (analysis.saturation) {
       stopReason = analysis.stop_reason || 'the analyst reported source saturation';
       break;
     }
 
     // --------------------------------------------------------------- ADMIT ---
-    const byId = new Map(wave.map(n => [n.id, n]));
-    const candidates = Array.isArray(analysis && analysis.next_queries) ? analysis.next_queries : [];
+    const candidates = analysis.next_queries;
+    const waveDepth = wave.length ? Math.max(...wave.map(n => n.depth)) : 0;
     let admitted = 0;
     for (const c of candidates) {
-      const parent = c.parent ? byId.get(c.parent) : null;
-      // A follow-up descends from the node that provoked it. Without a parent
-      // it is a new line of enquiry and starts shallow again.
-      const depth = c.kind === 'breadth' ? 0 : (parent ? parent.depth + 1 : 1);
-      const res = frontier.admit(makeNode({
+      // Lineage is resolved against every node the run ever admitted, not just
+      // this wave's — a parent named two waves ago is still a real parent.
+      const parent = c.parent ? nodesById.get(c.parent) || null : null;
+      // Depth, in three cases:
+      //   · breadth              — a new line of enquiry, starts at 0;
+      //   · a parent we know     — exactly one level below it;
+      //   · a parent we do NOT   — the analyst named an id we never admitted,
+      //     so trust nothing: it is at least one level below the wave that
+      //     provoked it. A hallucinated ancestor must not buy extra depth.
+      const depth = c.kind === 'breadth'
+        ? 0
+        : (parent ? parent.depth + 1 : (c.parent ? waveDepth + 1 : 1));
+      const res = remember(frontier.admit(makeNode({
         id: c.id, q: c.q, sub: c.sub || (parent && parent.sub) || null,
-        category: c.category, parent: parent ? parent.id : null,
+        category: c.category, parent: parent ? parent.id : (c.parent || null),
         depth, priority: c.priority ?? 0.5, kind: c.kind || 'depth',
-      }));
+      })));
       if (res.admitted) admitted++;
     }
     progress.info(
@@ -411,24 +454,43 @@ export async function runSurfAi(ctx, opts = {}) {
     );
 
     if (!admitted) {
-      drySpells++;
-      if (drySpells >= 2) {
+      wavesWithoutAdmission++;
+      if (wavesWithoutAdmission >= 2) {
         stopReason = 'two consecutive waves admitted no new queries';
         break;
       }
+    } else {
+      wavesWithoutAdmission = 0;
     }
     if (!frontier.size) {
       // Say WHY the frontier emptied. "The analyst had nothing left" and "the
       // analyst kept proposing queries that had already been run" look
       // identical from the outside and mean very different things about the
-      // quality of the run.
-      const lastRejections = frontier.rejected.slice(-candidates.length || -1);
-      const dupes = lastRejections.filter(r => /duplicate/.test(r.reason)).length;
-      stopReason = candidates.length && dupes === lastRejections.length && dupes > 0
-        ? `every follow-up the analyst proposed had already been run; ${dupes} duplicate(s) rejected`
-        : ((analysis && analysis.stop_reason) || 'the frontier is empty — every branch is closed or exhausted');
+      // quality of the run. And when the gate refused them for some other
+      // reason — the depth cap, a closed branch — falling back to
+      // analysis.stop_reason printed the analyst's reason for CONTINUING
+      // ("go deeper") as the run's reason for STOPPING.
+      if (!candidates.length) {
+        stopReason = analysis.stop_reason
+          ? `the analyst proposed no follow-up (${analysis.stop_reason}) and the frontier is empty`
+          : 'the analyst proposed no follow-up and the frontier is empty — every branch is closed or exhausted';
+      } else {
+        // Nothing is queued, so every one of this pass's candidates was
+        // rejected: the last `candidates.length` rejections are exactly them.
+        const lastRejections = frontier.rejected.slice(-candidates.length);
+        const dupes = lastRejections.filter(r => /duplicate/.test(r.reason)).length;
+        stopReason = dupes === lastRejections.length && dupes > 0
+          ? `every follow-up the analyst proposed had already been run; ${dupes} duplicate(s) rejected`
+          : `every follow-up the analyst proposed was refused at the admission gate (${countReasons(lastRejections)}), so the frontier is empty`;
+      }
       break;
     }
+  }
+
+  // Only now can the stop reason be stated truthfully: if not one wave ran,
+  // saying the planned wave completed is a lie the calling agent acts on.
+  if (!stopReason) {
+    stopReason = round > 0 ? 'completed the planned wave' : noWaveReason(plan, frontier);
   }
 
   // ---------------------------------------------------------- SYNTHESIZE ---
@@ -441,7 +503,7 @@ export async function runSurfAi(ctx, opts = {}) {
     // no one — hand back the diagnosis instead of a confident empty answer.
     progress.warn('surf-ai: no sources retrieved — emitting the failure report instead of a synthesis');
     diagnostics.degraded.push({ stage: 'synthesize', reason: 'no sources retrieved' });
-    answer = noEvidenceReport(runCtx, ledger);
+    answer = noEvidenceReport(runCtx, ledger, { plan, frontier, stopReason });
   } else {
     try {
       const r = await llm('synthesize', {
@@ -545,14 +607,110 @@ function normalizePlan(raw, maxQueries) {
   };
 }
 
-function noEvidenceReport(ctx, ledger) {
+/**
+ * Coerce whatever the analyst returned into the shape the loop expects.
+ *
+ * Returns null when the reply cannot be an analysis at all. Everything
+ * downstream may then assume: `open_points` and `branches_to_close` are arrays
+ * of strings and `next_queries` is an array of objects. Those guarantees are
+ * load-bearing, because this stage runs AFTER the wave's Brave requests are
+ * already paid for — a malformed field has to degrade the run, never crash it.
+ */
+function normalizeAnalysis(raw) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  return {
+    ...raw,
+    resolved: !!raw.resolved,
+    saturation: !!raw.saturation,
+    confidence: typeof raw.confidence === 'string' ? raw.confidence : '',
+    coverage: Array.isArray(raw.coverage) ? raw.coverage : [],
+    open_points: asStringList(raw.open_points),
+    // `"sq1"` means the branch sq1 — not the three branches 's', 'q' and '1',
+    // which is what iterating a string produced. A number names no branch at
+    // all, so it closes none instead of throwing `is not iterable`.
+    branches_to_close: asStringList(raw.branches_to_close),
+    next_queries: Array.isArray(raw.next_queries)
+      ? raw.next_queries.filter(c => c && typeof c === 'object' && !Array.isArray(c))
+      : [],
+    stop_reason: typeof raw.stop_reason === 'string' ? raw.stop_reason : '',
+  };
+}
+
+/** A list of non-empty strings — from a list, from a lone string, or nothing. */
+function asStringList(v) {
+  if (typeof v === 'string') return v.trim() ? [v.trim()] : [];
+  if (!Array.isArray(v)) return [];
+  return v.filter(x => typeof x === 'string' && x.trim()).map(x => x.trim());
+}
+
+/** "2× duplicate…; 1× deeper than the depth cap (1)" — rejections, tallied. */
+function countReasons(rejections) {
+  const byReason = new Map();
+  for (const r of rejections) byReason.set(r.reason, (byReason.get(r.reason) || 0) + 1);
+  return [...byReason.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .map(([reason, n]) => `${n}× ${reason}`)
+    .join('; ');
+}
+
+/** Why a run finished without ever entering the wave loop. */
+function noWaveReason(plan, frontier) {
+  const planned = plan.queries.length;
+  if (!planned) return 'no wave ran: the planner produced no query at all';
+  if (!frontier.rejected.length) return 'no wave ran: the frontier was empty before the first wave';
+  return `no wave ran: all ${planned} planned quer${planned === 1 ? 'y was' : 'ies were'} ` +
+         `refused at the admission gate (${countReasons(frontier.rejected)})`;
+}
+
+/**
+ * The zero-source report.
+ *
+ * Two very different situations end here and the agent reading the output has
+ * to tell them apart:
+ *   · searches ran and failed — quota WAS spent; list every attempt;
+ *   · nothing was ever issued — the plan died at the admission gate. Printing
+ *     "What was attempted" from an empty ledger told the agent that every
+ *     search had failed when not one request left the process.
+ */
+function noEvidenceReport(ctx, ledger, { plan, frontier, stopReason } = {}) {
+  const rows = ledger.rows;
+  const failed = ledger.failedRows.length;
   const lines = [];
-  lines.push(`> ❌ **No sources retrieved.** Every search failed, so there is nothing to synthesize.`);
+
+  if (!rows.length) {
+    lines.push('> ❌ **No sources retrieved — and no search was ever issued.** Not one request reached Brave, so no quota was spent.');
+    lines.push('');
+    lines.push(`# ${ctx.question}`);
+    lines.push('');
+    lines.push('## Why nothing ran');
+    lines.push(`- ${stopReason || 'the frontier was empty before the first wave'}`);
+    const rejected = (frontier && frontier.rejected) || [];
+    if (rejected.length) {
+      lines.push('');
+      lines.push(`## The ${rejected.length} quer${rejected.length === 1 ? 'y' : 'ies'} refused at the admission gate`);
+      for (const r of rejected.slice(0, 20)) {
+        lines.push(`- \`${r.q}\` — ${r.reason}`);
+      }
+      if (rejected.length > 20) lines.push(`- …and ${rejected.length - 20} more`);
+    }
+    lines.push('');
+    lines.push('## Fix');
+    lines.push('- Rephrase the question with concrete nouns. A plan built out of stopwords yields queries with no content words, and those are refused before any request is made.');
+    lines.push('- `--max-queries N` — ask the planner for more angles, so one refusal does not empty the plan.');
+    lines.push('- Re-run: the plan comes from an LLM and is not deterministic.');
+    lines.push('');
+    lines.push('_No Brave request was made, so no key, quota, rate limit or timeout is implicated — the run stopped before the network._');
+    return lines.join('\n');
+  }
+
+  lines.push(failed === rows.length
+    ? `> ❌ **No sources retrieved.** Every search failed (${failed} of ${failed}), so there is nothing to synthesize.`
+    : `> ❌ **No sources retrieved.** ${rows.length} search(es) ran — ${failed} failed and the rest came back empty — so there is nothing to synthesize.`);
   lines.push('');
   lines.push(`# ${ctx.question}`);
   lines.push('');
-  lines.push('## What was attempted');
-  for (const row of ledger.rows) {
+  lines.push(`## What was attempted (${rows.length} quer${rows.length === 1 ? 'y' : 'ies'})`);
+  for (const row of rows) {
     lines.push(`- \`${row.query}\` — ${row.ok ? 'returned 0 results' : `${row.error.code}: ${row.error.message}`}`);
   }
   lines.push('');
