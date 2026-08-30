@@ -1,4 +1,4 @@
-# Modos de falha — surf-research-agent-skill v7
+# Modos de falha — surf-research-agent-skill v8
 
 Leia o caso quando o sintoma aparecer. O `SKILL.md` traz só o índice.
 
@@ -10,7 +10,8 @@ Leia o caso quando o sintoma aparecer. O `SKILL.md` traz só o índice.
 | `handoff-sem-payload` | Sub-agente terminou com sucesso e não devolveu o formato |
 | `fork-indisponível` | `Agent type 'fork' not found` — modo fork desligado |
 | `teto-de-sessão` | `Subagent spawn limit reached` — 200 sub-agentes na sessão |
-| `rajada-vazia` | Rajada inteira voltou sem achado ou com confiança baixa em tudo |
+| `rajada-vazia` | Rajada inteira voltou sem achado |
+| `rajada-estéril` | Menos da metade das dúvidas disparadas voltou respondida com confiança Média ou Alta |
 | `deriva-de-dúvida` | As dúvidas novas já não falam da pergunta original |
 | `irmãos-incompatíveis` | Dois handoffs da mesma rajada não podem ser ambos verdadeiros |
 | `web-contradiz-projeto` | O achado na web contradiz o contexto local |
@@ -36,8 +37,12 @@ mensagem do portão verbatim e encerre — nenhum sub-agente vai conseguir, e
 disparar mais só multiplica o mesmo erro. Ver `chave-brave-inválida` na
 `degradation` da SKILL.md.
 
-**Ação.** O T3 (regra 3) já mandou o sub-agente tentar `--max-queries 4`.
-**Nunca prescreva isso de novo.** Bifurque:
+**Ação.** O T3 (regra 3) já mandou o sub-agente tentar UMA vez menor, com os
+dois botões baixados juntos: `--sub-agents=1 --max-queries=4`. Os dois, sempre —
+a CLI usa `max(--max-queries, --sub-agents)`, então baixar só o `--max-queries`
+é inerte: com o leque que o sub-agente recebeu, o orçamento de consultas volta
+a subir para ele e a retentativa repete exatamente o tamanho que acabou de
+falhar. **Nunca prescreva a retentativa de novo.** Bifurque:
 
 - Ele morreu ANTES de rodar a escada (exit 143, timeout do harness, spawn
   falho): a falha foi do processo, não da dúvida. Re-dispare o MESMO prompt uma
@@ -94,7 +99,7 @@ final que rodaram sem sub-agente por estouro do teto de sessão.
 
 ## `rajada-vazia`
 
-**Sintoma.** Rajada inteira voltou sem achado, ou com confiança baixa em tudo.
+**Sintoma.** Rajada inteira voltou sem achado.
 
 **Ação.** As dúvidas estavam largas ou mal formuladas. Reescreva-as mais
 específicas e re-dispare — isto é **retentativa da MESMA rajada**, não uma
@@ -102,6 +107,45 @@ rajada nova: não incrementa o contador de rajadas (C4 e a tabela do T8), não
 conta como seca (C1) e não viola a rajada-única. Vale o teto da R9: no máximo 2
 tentativas. Persistindo, marque "sem dados públicos disponíveis" — e não
 invente.
+
+Confiança baixa não é este caso. Um handoff que volta com `Confidence: Low`
+fecha nada: ele entra no registro como **RESPONDIDA-FRACA** (invariante I4 do
+SKILL.md), não como RESPONDIDA, e chega ao relatório na letra `H` e na tabela
+"Questões em aberto". Quando a rajada INTEIRA volta assim, o caso é
+`rajada-estéril`, abaixo.
+
+## `rajada-estéril`
+
+**Sintoma.** A rajada voltou mais falha do que resposta. A conta: `S` = dúvidas
+disparadas nela (as marcadas EM-VOO), `R` = quantas voltaram RESPONDIDA com
+confiança Média ou Alta — RESPONDIDA-FRACA e BLOQUEADA não entram em `R`. Se
+`2*R < S`, a rajada é **estéril**.
+
+**Por que tem caso próprio.** Uma rajada estéril produz naturalmente ZERO
+dúvidas novas admissíveis, porque dúvida nova nasce de resposta e não houve
+resposta. Sem esta regra, o contador de secas do C1 sobe, duas dessas declaram
+SATURADO, e a skill entrega dizendo "esgotamos o assunto" quando o que
+aconteceu foi "não conseguimos pesquisar". É o modo de falha silencioso mais
+caro do workflow: ele não erra a resposta, ele erra o MOTIVO da parada.
+
+**Ação.**
+1. A rajada estéril **não incrementa o contador de secas** (C1) e não pode
+   disparar C2. Anote-a como `Estéril` na coluna "Dry? / Sterile?" do T8.
+   Isso vale mesmo que ela tenha admitido dúvidas: estéril descreve o que
+   voltou, não o que o portão deixou passar.
+2. Se ela também não admitiu NENHUMA dúvida no portão, trate como
+   `rajada-vazia`: reformule as dúvidas mais estreitas e re-dispare a MESMA
+   rajada, no máximo 2 vezes (R9). Se admitiu alguma, o loop está andando —
+   siga para a rajada seguinte e não re-dispare esta.
+3. Antes de reformular, olhe o motivo — ele é diferente conforme a mistura:
+   muitas BLOQUEADAS apontam para a CLI ou para o plano Brave (ver
+   `cli-falhou` e `brave-sem-cota`); muitas RESPONDIDA-FRACA apontam para
+   dúvida larga demais, e estreitar é a correção certa.
+4. Duas estéreis consecutivas param a pesquisa — mas o motivo de parada
+   declarado no T8 é **"pesquisa impedida (rajadas estéreis)"**, jamais
+   "saturação". As dúvidas que ficaram vão para "Questões em aberto" com o que
+   as fecharia, cada uma na sua letra (`I` para BLOQUEADA, `H` para
+   RESPONDIDA-FRACA, `F` para ABERTA).
 
 ## `deriva-de-dúvida`
 

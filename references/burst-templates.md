@@ -1,4 +1,4 @@
-# Burst templates — surf-research-agent-skill v7
+# Burst templates — surf-research-agent-skill v8
 
 Ready-to-use prompts for the orchestrator to copy and fill in. Each `{{FIELD}}` is
 replaced before firing. **Never fire a sub-agent without filling in all
@@ -234,8 +234,12 @@ surf-search-unlimit "{{DOUBT_TEXT}}" \
 
 `{{SUB_AGENTS_EACH}}` is `max(1, floor(N / <burst size>))`, where N is the
 orchestrator's `sub-agents` ceiling (default 10). The two levels ADD; without
-the flag they would MULTIPLY, and a burst of 5 would put 50 concurrent requests
-on a Brave plan that may serve one per second.
+the flag they would MULTIPLY, and a burst of 5 would ASK for 50 requests on a
+Brave plan that may serve one per second. They would not arrive at once:
+while the rate limiter is armed it is cross-process — every sub-agent is a
+separate process sharing one ledger — so the excess is QUEUED, not concurrent.
+What you buy by dividing the budget is wall-clock, not a saved error: an
+undivided fan-out leaves the whole burst waiting for the queue to drain.
 
 Bash timeout: 180000 ms for `normal`, 600000 ms for `unlimit`. Note that surf
 paces requests to your Brave plan's rate limit, so a wide fan-out on a slow plan
@@ -263,8 +267,10 @@ relevant."
 0. FAN-OUT BUDGET — every surf-search-* command you run MUST carry
    `--sub-agents={{SUB_AGENTS_EACH}}`. The orchestrator divided its own ceiling
    across this burst; without the flag you would use the default of 10 and this
-   burst would issue ten times more concurrent Brave requests than the plan can
-   serve.
+   burst would ask Brave for ten times more requests than the plan can serve.
+   The rate limiter queues the excess rather than firing it at once, so what
+   you would spend is wall-clock — the whole burst waiting on one queue — not a
+   failure you can see in the logs.
 1. Do not invent. The CLI plans the queries, searches in parallel, and synthesizes.
 2. Never ask the user anything.
 3. FAILURE LADDER — this is the only one, and it is yours:
@@ -272,14 +278,39 @@ relevant."
      gate message verbatim as your handoff and mark the doubt BLOCKED. Do not
      retry, do not search another way: every sibling is about to fail the same
      way, and the orchestrator needs to hear it once, not N times.
-   - Any other failure → try once more with `--max-queries 4`. If it fails
-     again, mark the doubt BLOCKED and say why.
+   - Any other failure → try ONCE more, smaller, lowering BOTH knobs together:
+     `--sub-agents=1 --max-queries=4`. Lowering only `--max-queries` is inert:
+     the CLI uses `max(--max-queries, --sub-agents)`, so with the fan-out you
+     were handed the query budget springs straight back up to it and you rerun
+     the same size that just failed. If it fails again, mark the doubt BLOCKED
+     and say why.
    - There is NO fallback to the harness's WebSearch/WebFetch. surf v8 answers
      from Brave or not at all: a source that did not come through the CLI has
      no entry in the ledger, no citation number, and cannot be audited in the
      final report. A BLOCKED doubt reported honestly is a valid delivery; a
      smuggled source is not.
-4. Write the COMPLETE handoff to `{{HANDOFF_DIR}}/{{DOUBT_ID}}.md` (with all
+   - `surf-research-skill search` / `search-parallel` is NOT a rung of this
+     ladder either. It does go to Brave, but it returns a raw SERP with no
+     synthesis, no ledger and no citation numbers, so a handoff built from it
+     cannot carry `[n]`. Reach for it only when the answer to your doubt IS
+     the list of links, never as a retry for a CLI that failed.
+4. SOURCE LEDGER — after the CLI run, before writing the handoff. The
+   orchestrator's stop rule C3 is a comparison of two integers, and the
+   integers come from you. From the JSON you just wrote:
+
+   ```bash
+   node -e 'const d=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));process.stdout.write(((d.sources)||[]).map(s=>s.url).join("\n")+"\n")' \
+     "{{HANDOFF_DIR}}/{{DOUBT_ID}}.json" > "{{HANDOFF_DIR}}/{{DOUBT_ID}}.urls.txt"
+   node -e 'const d=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));console.log(d.ledger.stats.sources)' \
+     "{{HANDOFF_DIR}}/{{DOUBT_ID}}.json"
+   ```
+
+   `.sources[].url` is already canonical — the CLI drops the fragment and the
+   tracking params and indexes by URL, so one line per distinct source needs no
+   further cleaning. `.ledger.stats.sources` is that same count as an integer.
+   Both go in the summary below. If the run failed and there is no JSON, write
+   an EMPTY `.urls.txt` and report `0` — never omit the fields.
+5. Write the COMPLETE handoff to `{{HANDOFF_DIR}}/{{DOUBT_ID}}.md` (with all
    sources and excerpts) and return only the SUMMARY below. The orchestrator
    reads the summary; the synthesizer reads the file. If the summary is not
    enough for the orchestrator to judge whether a new doubt emerged, it opens
@@ -288,12 +319,21 @@ relevant."
 
 ## OUTPUT FORMAT — what you return (target: 1,000–2,000 tokens)
 
+The orchestrator reads **Confidence** as a literal word, not as a mood: `Low`
+closes nothing — the doubt is recorded as ANSWERED-WEAK and shows up in the
+final report's open questions. So do not round `Low` up to `Medium` to be
+helpful. A Low reported as Low becomes a declared open question; a Low dressed
+as Medium becomes a silent hole in the final answer, which is the one failure
+this skill exists to prevent.
+
 ```markdown
 ## {{DOUBT_ID}} — [the doubt in one line]
 **Answer:** [direct answer, 1–3 sentences, with [n]]
 **Confidence:** High | Medium | Low — [1 sentence]
 **Evidence:** [the 2–4 facts that support the answer, each with [n]]
 **Sources:** [1] Title — URL (date) · [2] ...
+**Distinct sources (CLI):** [the integer from `.ledger.stats.sources`, or 0]
+**URL file:** {{HANDOFF_DIR}}/{{DOUBT_ID}}.urls.txt
 **Contradictions found:** [sources that disagree with each other — or "None"]
 **Conflict with established context:** [or "None"]
 **New doubts this answer opens:** [closed question, and what changes in the
@@ -376,8 +416,22 @@ another agent does that. You judge whether they ANSWER the question.
 ## PROMISED DELIVERABLE
 {{DELIVERABLE}}
 
-## DOUBT REGISTER (all bursts)
-{{DOUBT_REGISTER}}
+## DOUBT REGISTER — read it from disk, all bursts
+{{DOUBT_REGISTER_PATH}}
+
+Open that file and read it yourself. You were handed a PATH, not a copy: a
+register pasted into a prompt is the orchestrator's MEMORY of the register, and
+after four bursts the memory and the file disagree. The file is what the
+synthesizer will read, so the file is what you audit. If the path does not
+exist, stop and say so — do not audit from anything in this prompt.
+
+The register is written in Portuguese. The status column maps like this, and
+you count rows by these words: `ABERTA` = OPEN · `EM-VOO` = IN-FLIGHT ·
+`RESPONDIDA` = ANSWERED · `RESPONDIDA-FRACA` = ANSWERED-WEAK (came back with
+`Confidence: Low`) · `RESPONDIDA-INFERIDA` = ANSWERED-INFERRED ·
+`BLOQUEADA` = BLOCKED · `DESCARTADA: <reason>` = DISCARDED ·
+`DUPLICATA-DE-Dn` = DUPLICATE. The confidence column reads `Alta` / `Média` /
+`Baixa`.
 
 ## CONSOLIDATED FINDINGS
 {{FINDINGS}}
@@ -390,6 +444,19 @@ another agent does that. You judge whether they ANSWER the question.
 4. Did any collected evidence get left out of the findings without justification?
 5. Was any DISCARDED doubt discarded for a weak reason?
 6. Can the answer be written without inventing anything? If not, what is missing.
+7. THE ACCOUNTING CLOSES? Count the rows of the register by status and check
+   `A = B + C + G + E + I + H + F` — the letters are defined in the register's
+   own invariant I5 (A total · B closed by context · C closed by search ·
+   G closed by inference · E refused at the gate, discarded plus duplicates ·
+   I blocked · H answered-weak · F still open). If it does not close, report
+   both numbers and the difference. A register that does not close has a doubt
+   that evaporated somewhere.
+8. Is any row still IN-FLIGHT / EM-VOO? That is a burst nobody waited for.
+9. Does every OPEN, BLOCKED and ANSWERED-WEAK row have "what would close it"
+   filled in? Those are exactly the rows the reader will be handed as open
+   questions, and an empty cell there is a hole with no instructions.
+10. Is any row marked ANSWERED whose handoff says `Confidence: Low`? That is a
+    doubt closed silently; list every one you find.
 
 ## OUTPUT FORMAT
 
@@ -403,12 +470,25 @@ another agent does that. You judge whether they ANSWER the question.
 ## Open doubts never fired
 - ...
 
+## Answered rows whose handoff says Confidence: Low
+- [D7 — marked ANSWERED, handoff says Low — or "None"]
+
 ## Evidence collected and not used
 - ...
+
+## Accounting
+A={{A}} · B={{B}} · C={{C}} · G={{G}} · E={{E}} · I={{I}} · H={{H}} · F={{F}}
+Identity `A = B+C+G+E+I+H+F`: HOLDS | DOES NOT HOLD (off by {{DIFF}})
+Rows still IN-FLIGHT: {{N}}
 
 ## Verdict
 [READY FOR SYNTHESIS] or [MISSING — list of the minimum needed]
 ```
+
+The verdict is **MISSING**, never READY, when the identity does not hold, when
+any row is still IN-FLIGHT, or when an ANSWERED row sits on a `Confidence: Low`
+handoff. Those three are arithmetic, not taste: each is settled by looking at
+the file, and none of them turns on how good the answer reads.
 ````
 
 ---
@@ -431,8 +511,20 @@ You are the synthesizer. You write the final answer and nothing else.
 ## CALLER AND PROJECT CONTEXT
 {{ESTABLISHED_CONTEXT}}
 
-## COMPLETE DOUBT REGISTER — all bursts
-{{DOUBT_REGISTER}}
+## COMPLETE DOUBT REGISTER — read it from disk, all bursts
+{{DOUBT_REGISTER_PATH}}
+
+Open that file and read it yourself. You were handed a PATH, not a copy — what
+you must synthesize is what the register SAYS, not what the prompt remembers of
+it.
+
+The register is written in Portuguese. The status column maps like this, and
+you count rows by these words: `ABERTA` = OPEN · `EM-VOO` = IN-FLIGHT ·
+`RESPONDIDA` = ANSWERED · `RESPONDIDA-FRACA` = ANSWERED-WEAK (came back with
+`Confidence: Low`) · `RESPONDIDA-INFERIDA` = ANSWERED-INFERRED ·
+`BLOQUEADA` = BLOCKED · `DESCARTADA: <reason>` = DISCARDED ·
+`DUPLICATA-DE-Dn` = DUPLICATE. The confidence column reads `Alta` / `Média` /
+`Baixa`.
 
 ## FULL HANDOFFS
 Read the files in {{HANDOFF_DIR}}/. They have the sources and excerpts that the
@@ -459,6 +551,14 @@ summaries do not carry.
 8. A deliverable part the auditor marked as orphan is not asserted: it either
    comes out, or goes in with the gap declared in the text itself, and the
    corresponding doubt appears in "Open questions."
+9. The "Open questions" table has EXACTLY `F + I + H` rows: one per row of the
+   register whose status is OPEN (F), BLOCKED (I) or ANSWERED-WEAK (H). Count
+   them in the file before writing the table. A doubt that is in the register
+   and not in the table is a hole the reader cannot see — and a BLOCKED doubt
+   in particular has nowhere else to appear.
+10. A claim resting on an ANSWERED-WEAK doubt carries a written caveat, exactly
+    like a SOLITARY one. Never state it flat. If a whole section rests on
+    ANSWERED-WEAK rows, say so at the top of the section.
 
 ## OUTPUT FORMAT
 
@@ -466,7 +566,8 @@ summaries do not carry.
 <the answer, in the requested format, cited with [n]>
 
 ## Open questions
-| Doubt | Why it was not closed | What would close it |
+| Doubt | Status | Why it was not closed | What would close it |
+(exactly F + I + H rows — OPEN, BLOCKED and ANSWERED-WEAK, no exceptions)
 
 ## Sources
 [1] Title — URL (date)
@@ -505,7 +606,11 @@ role.
 ## T8 — FINAL REPORT
 
 What the user reads at the end. The register numbers are the point: they show
-where the burst spent effort and what was left out.
+where the burst spent effort and what was left out. **The accounting has to
+close**: every doubt that ever existed lands in exactly one letter, and no
+letter is allowed to be a mute integer. A report whose identity does not close
+is a report with an evaporated doubt — which is the same thing as an answer
+delivered with a hole nobody declared.
 
 ```markdown
 ## Research completed — {{RESUMO_DA_PERGUNTA}}
@@ -516,17 +621,30 @@ where the burst spent effort and what was left out.
 {{RESPOSTA_CURTA}} — full in `research/{{SLUG}}/ANSWER.md`
 
 ### Doubt register
-Raised {{A}} · closed by context {{B}} · closed by search {{C}} ·
-closed by orchestrator inference {{G}} · admitted in subsequent bursts
-{{D}} · discarded at gate {{E}} · open at delivery {{F}}
+Raised **{{A}}** · closed by context **{{B}}** · closed by search **{{C}}** ·
+closed by orchestrator inference **{{G}}** · refused at the gate **{{E}}**
+(discarded plus duplicates) · **blocked {{I}}** · **answered with low
+confidence {{H}}** · open at delivery **{{F}}**
 
-{{F}} sums two groups, and the open-questions table distinguishes the two:
-those admitted at triage (single mode) and those that were never fired due to
-burst cap overflow.
+**Identity: `A = B + C + G + E + I + H + F`.** It closed: YES | NO. If it did
+not close, the register is wrong — fix the register, never the number.
+`{{D}}` (admitted in subsequent bursts) is a FLOW metric: it belongs to the
+burst table and does NOT enter the identity, otherwise a doubt admitted in
+burst 2 and answered in burst 2 is counted twice.
+
+`{{F}}`, `{{I}}` and `{{H}}` appear line by line in "Open questions" below:
+the table has exactly **F + I + H** rows. A blocked doubt has no other place in
+this report, and a low-confidence one has no other place at all.
 
 ### Bursts
-| # | Fired | New admitted | Unpublished sources | Dry? |
-|---|-----------|-----------------|-----------------|-------|
+| # | Fired | Answered High/Med | New admitted | Distinct sources U(N) | Dry? / Sterile? |
+|---|-------|-------------------|--------------|-----------------------|-----------------|
+
+`U(N)` is `wc -l research/{{SLUG}}/SOURCES.txt` after that burst — the C3
+comparison is `U(N)` against `U(N-1)`, two integers off the disk. A burst is
+**dry** only when at least half of what it fired came back answered with
+High/Medium confidence and it still admitted nothing; below that half it is
+**sterile**, which does not count toward saturation.
 
 ### Verification
 Confirmed {{X}} · Solitary {{Y}} · Refuted {{Z}} · Outdated {{W}}
@@ -536,11 +654,39 @@ Confirmed {{X}} · Solitary {{Y}} · Refuted {{Z}} · Outdated {{W}}
 One entry per ANSWERED-INFERRED doubt — the {{G}} above.
 - {{PREMISE}}
 
+### Doubts refused at the gate
+| Doubt | Gate | Reason, in one line |
+|-------|------|---------------------|
+
+One row per candidate refused at **G2, G3 or G4** (a G3 refusal names its
+letter: a future event · b third-party intent · c unpublished private data ·
+d not a factual question). Refusals at G1 stay in the counter alone, with the
+`Dn` they duplicate recorded in the register. **If this table is empty while
+`{{E}} > 0`, the report is wrong** — minus the G1 duplicates, the two have to
+agree. These are the questions the orchestrator decided NOT to ask; hiding them
+behind an integer is the one thing this skill promises not to do.
+
+### Caveats
+Required whenever `{{H}} > 0`: name every claim in the answer that rests on a
+low-confidence doubt, and say what evidence was missing. If `{{H}} == 0`, write
+"None".
+
 ### Open questions
-| Doubt | Why it stayed open | What would close it |
+| Doubt | Status | Why it stayed open | What would close it |
+|-------|--------|--------------------|---------------------|
+
+Exactly **F + I + H** rows — OPEN (admitted at triage in single-burst mode, or
+never fired because of burst-cap overflow), BLOCKED (the CLI failed twice) and
+ANSWERED-WEAK (came back with low confidence). Nothing else belongs here, and
+none of those three may be left out.
 
 ### Stop reason
-{{Saturation by 2 dry bursts | Burst cap (6) | Burst cap (12, extended) | Single-burst mode}}
+{{Saturation by 2 dry bursts | Source saturation (C3: U(N) == U(N-1)) |
+Research prevented (sterile bursts) | Burst cap (6) | Burst cap (12, extended) |
+Single-burst mode}}
+
+"Saturation" may only be claimed when the bursts that ended it were DRY. A
+research run stopped by sterile bursts was prevented, not concluded — say so.
 
 **Burst 0 via:** FORK | INLINE (fork mode unavailable)
 **Artifacts:** `research/{{SLUG}}` — committed at {{SHA}} | not committed ({{MOTIVO}})

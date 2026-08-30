@@ -19,11 +19,11 @@ description: >-
   ranked links and snippets, never page content.
 license: MIT
 argument-hint: "question or topic — optionally single-burst | continuous-burst, and sub-agents=N (default 10)"
-allowed-tools: Agent, Task, Read, Write, Edit, Grep, Glob, Skill, Bash(git:*), Bash(mkdir:*), Bash(ls:*), Bash(wc:*), Bash(surf-research-skill keys:*)
+allowed-tools: Agent, Task, Read, Write, Edit, Grep, Glob, Skill, Bash(git:*), Bash(mkdir:*), Bash(ls:*), Bash(wc:*), Bash(surf-research-skill gate:*), Bash(surf-research-skill keys:*)
 model: inherit
 effort: xhigh
 metadata:
-  version: "8.0.0"
+  version: "8.0.1"
   requires: "node>=18; install with `npm i -g surf-agent-skill`; a VALID BRAVE SEARCH key via `surf` or `surf-research-skill keys add --provider brave <key>` — without it every command exits 78 and this skill must stop; LLM key via `surf-research-skill ai-setup` (or exported OPENROUTER_API_KEY); per-project bash timeout via `surf-research-skill project-config`"
   environment: "A rota CALLER usa `subagent_type: \"fork\"`, que exige fork mode (CLAUDE_CODE_FORK_SUBAGENT=1 ou rollout escalonado). Sem ele a rota cai para INLINE automaticamente — nada quebra."
 ---
@@ -37,15 +37,24 @@ metadata:
     fechada para cada, lê os handoffs, decide quais dúvidas novas merecem
     existir, e repete até a pergunta parar de gerar dúvidas admissíveis.</archetype>
   <mantra>Duvidar. Rotear. Disparar a rajada. Triar. Duvidar de novo. Refutar. Sintetizar. Devolver.</mantra>
-  <enforcement>Você TEM WebSearch, WebFetch e os binários surf-search-* no seu
-    pool — e não os usa. A R1 é disciplina, não trava: qualquer restrição de
-    ferramenta declarada no frontmatter se propaga para os sub-agentes da
-    rajada e desarmaria a busca deles. Se você chamar uma dessas ferramentas,
-    você quebrou a skill. A dúvida vira sub-agente, sempre.
-    E os sub-agentes buscam por UM caminho só: os binários surf-search-*, que
-    falam com o Brave. WebSearch e WebFetch não são plano B — uma fonte que não
-    passou pela CLI não entra no ledger, não recebe número de citação e não
-    pode ser auditada no relatório final.</enforcement>
+  <enforcement>A trava contra VOCÊ é a lista `allowed-tools` do frontmatter:
+    ela já omite WebSearch, WebFetch e `Bash(surf-search-*)`. Ela vale para o
+    SEU turno e não alcança os sub-agentes — cada sub-agente recebe o conjunto
+    de ferramentas do TIPO dele (`fork`, `Explore`, `general-purpose`), não o
+    seu; se a restrição se propagasse, essa mesma lista já teria desarmado a
+    rajada inteira. Onde a lista não alcança, vale a disciplina: se você sentir
+    vontade de buscar, a vontade É a dúvida — vira sub-agente, sempre.
+    E os sub-agentes falam com o Brave por esta CLI, por dois caminhos e nenhum
+    outro: (1) `surf-search-normal` / `surf-search-unlimit` — o caminho padrão,
+    porque devolvem resposta sintetizada, citação `[n]` e ledger de fontes;
+    (2) `surf-research-skill search` / `search-parallel` — SERP cru, permitido
+    SÓ quando a resposta desejada É a lista de links, ou quando se precisa de um
+    filtro do Brave que os binários não expõem. O caminho (2) NÃO é degrau da
+    escada de falha do T3: quando a CLI falha, a dúvida fica BLOQUEADA, não
+    migra para busca crua.
+    WebSearch e WebFetch não são plano B — uma fonte que não passou por esta CLI
+    não entra no ledger, não recebe número de citação e não pode ser auditada
+    no relatório final.</enforcement>
 </identity>
 
 <modes>
@@ -182,10 +191,28 @@ metadata:
 | D2 | Qual versão de Postgres este projeto roda? | PROJECT | INICIAL | Sem isso, D1 não tem resposta útil | RESPONDIDA | Alta | 0 |
 | D7 | O limite de 2000 dimensões vale para HNSW ou só para ivfflat? | WEB | D1 | Muda a recomendação para embeddings de 3072 dim | ABERTA | — | 2 |
 | D9 | Por que o HNSW usa grafos hierárquicos? | — | D7 | — | DESCARTADA: não muda o entregável | — | 2 |
+| D11 | Qual o p99 do Qdrant nessa VPS com 800k vetores? | WEB | D3 | Decide o veredito da tabela de latência | RESPONDIDA-FRACA | Baixa | 2 |
+| D12 | Que CVEs de pgvector foram publicados em 2026? | WEB | D4 | Muda a seção "risco" | BLOQUEADA: CLI falhou 2 disparos | — | 2 |
   ]]></schema>
 
+  <schema-note>As duas últimas linhas são os estados que mais somem quando o
+    registro é escrito de memória. Elas têm de estar no arquivo, com a coluna
+    Confiança preenchida: `Baixa` é o que impede RESPONDIDA (I4), e BLOQUEADA é
+    o que tem letra própria na contagem (I5).</schema-note>
+
+  <header>O `DOUBTS.md` abre com DUAS linhas de comentário, reescritas a cada
+    disparo e a cada retorno. Elas são o que a fase 4 e o portão de síntese
+    leem — inteiros em disco, não lembrança:
+    <![CDATA[
+<!-- BARREIRA rajada N: em-voo=5 recebidos=2 -->
+<!-- CONTAGEM: A=23 B=4 C=11 G=2 E=3 I=1 H=1 F=1 · U=37 -->
+    ]]>
+    `U` é o `wc -l` de `research/{{SLUG}}/SOURCES.txt` — o inteiro que o C3
+    compara.</header>
+
   <status-values>
-    ABERTA · EM-VOO · RESPONDIDA · RESPONDIDA-INFERIDA (fechada pelo seu próprio
+    ABERTA · EM-VOO · RESPONDIDA · RESPONDIDA-FRACA (voltou com confiança
+    Baixa — ver I4) · RESPONDIDA-INFERIDA (fechada pelo seu próprio
     conhecimento, sem sub-agente) · BLOQUEADA · DESCARTADA (com motivo) ·
     DUPLICATA-DE-Dn
   </status-values>
@@ -204,6 +231,45 @@ metadata:
     resposta criou esta, ou INICIAL. Ela nunca guarda COMO a resposta foi
     obtida. É essa cadeia que G4 percorre para detectar deriva: D1→D7→D14→D22
     que já não fala da pergunta original.</invariant>
+  <invariant id="I4">CONFIANÇA BAIXA NÃO FECHA DÚVIDA. Antes de escrever o
+    status, leia a coluna Confiança do handoff — o campo `**Confidence:**` do
+    T3. Se ela diz `Baixa` / `Low`, a dúvida NÃO pode ser marcada RESPONDIDA:
+    o status é RESPONDIDA-FRACA. Não há julgamento aqui, é a leitura de uma
+    palavra; se a palavra é Low e o status é RESPONDIDA, o registro está errado.
+    Uma RESPONDIDA-FRACA:
+    (a) NUNCA entra no CONTEXTO ESTABELECIDO de outro sub-agente;
+    (b) em rajada-contínua é re-admitida na rajada seguinte, reformulada mais
+        estreita, SEM passar pelo portão — o portão julga dúvida nova, ele não
+        reabre dúvida malfeita;
+    (c) em rajada-única entra OBRIGATORIAMENTE em "Questões em aberto", com o
+        motivo "respondida com confiança baixa" e a evidência que faltou;
+    (d) toda afirmação da resposta final que dependa dela carrega ressalva
+        escrita, como uma SOLITÁRIA.
+    Chegando assim na entrega, ela conta em H — nunca em C.</invariant>
+  <invariant id="I5">A CONTAGEM FECHA — nenhuma dúvida evapora. Todo status
+    terminal cai em EXATAMENTE uma letra, e esta identidade vale sempre:
+
+    **A = B + C + G + E + I + H + F**
+
+    | Letra | Conta | Status terminal no registro |
+    |---|---|---|
+    | A | todas as dúvidas que já existiram | total de linhas da tabela |
+    | B | fechadas pelo contexto | RESPONDIDA com Rota CALLER ou PROJECT |
+    | C | fechadas por busca | RESPONDIDA com Rota WEB |
+    | G | fechadas por você, sem sub-agente | RESPONDIDA-INFERIDA |
+    | E | recusadas no portão | DESCARTADA: <motivo> e DUPLICATA-DE-Dn |
+    | I | bloqueadas | BLOQUEADA |
+    | H | respondidas fraco | RESPONDIDA-FRACA |
+    | F | abertas na entrega | ABERTA |
+
+    EM-VOO não é terminal e não tem letra: na entrega ele tem de ser ZERO.
+    Se a identidade não fechar, o REGISTRO está errado — conserte o registro,
+    nunca o número. `D` (admitidas em rajadas posteriores) é métrica de fluxo:
+    vai na tabela de rajadas e NÃO entra na identidade, senão a dúvida admitida
+    na rajada 2 e respondida na rajada 2 é contada duas vezes.
+    A tabela "Questões em aberto" do relatório tem exatamente **F + I + H**
+    linhas — uma por dúvida que chega ao fim sem resposta usável. Nenhuma das
+    três letras tem permissão de sumir num contador.</invariant>
 </doubt-register>
 
 <routing>
@@ -234,7 +300,14 @@ metadata:
     muito contexto que é irrelevante para você — a fronteira certa é a de
     CONTEXTO, não a de assunto. Dúvida cuja resposta cabe em uma linha e que
     você já sabe com certeza não precisa de sub-agente: responda inline e
-    registre como RESPONDIDA-INFERIDA, preservando a Origem real.</spawn-threshold>
+    registre como RESPONDIDA-INFERIDA, preservando a Origem real.
+    TRAVA DA INFERIDA: antes de escrever RESPONDIDA-INFERIDA, olhe a resposta
+    que você ia dar. Se ela contém um NÚMERO, uma VERSÃO, um PREÇO, uma DATA,
+    um LIMITE ou um nome de API/flag — ou se a afirmação vai carregar uma
+    citação `[n]` no entregável —, INFERIDA está PROIBIDA: dispare o
+    sub-agente. São exatamente as afirmações que envelhecem, e é para não
+    chutá-las que esta skill existe. Uma INFERIDA só entra no CONTEXTO
+    ESTABELECIDO com a etiqueta `(inferido, não verificado)`.</spawn-threshold>
   <ordering>Rotas CALLER e PROJECT vêm ANTES de qualquer WEB, em toda rajada —
     não só na 0. Buscar na web "melhor biblioteca de X" sem saber a versão do
     runtime do projeto produz uma resposta correta e inútil.</ordering>
@@ -251,20 +324,32 @@ metadata:
         1..20, corrija para o limite mais próximo e declare a correção.
         N é o TETO DE SIMULTANEIDADE da rajada (ver `budgets`).</step>
       <step>PORTÃO DA CHAVE — antes de qualquer rajada, rode
-        `surf-research-skill keys list`. Se ele sair com código 78, ou se a
-        seção `brave` não tiver nenhuma chave utilizável, PARE AQUI. Não
-        dispare sub-agente nenhum: eles falhariam um a um, cada um gastando
-        contexto para redescobrir a mesma coisa. Devolva a mensagem do portão
-        ao usuário, verbatim, e encerre. Esta skill não tem plano B — não
-        existe provedor alternativo, tier gratuito, nem WebSearch de reserva.
-        Uma resposta sem Brave seria uma resposta inventada.</step>
+        `surf-research-skill gate`. Ele resolve o MESMO portão que todo comando
+        de busca resolve e responde à única pergunta que importa: existe chave
+        Brave utilizável AGORA? O veredito é o CÓDIGO DE SAÍDA, não a prosa:
+        `0` = há chave utilizável, siga; `78` = PARE AQUI. Qualquer outro
+        código de saída conta como 78. Precisando do veredito estruturado,
+        `surf-research-skill gate --json`.
+        NÃO use `surf-research-skill keys list` como portão. Ele lista o que
+        está gravado em disco, não valida nada e sai 0 mesmo quando não há
+        nenhuma chave utilizável — esperar 78 dele é esperar um código que ele
+        nunca emite, e uma chave nunca sondada aparece na lista igual a uma boa.
+        `keys list` serve para DIAGNOSTICAR depois que o portão reprovou, nunca
+        para decidir se pode disparar.
+        Ao parar: não dispare sub-agente nenhum — eles falhariam um a um, cada
+        um gastando contexto para redescobrir a mesma coisa. Devolva a mensagem
+        do portão ao usuário, verbatim, e encerre. Esta skill não tem plano B —
+        não existe provedor alternativo, tier gratuito, nem WebSearch de
+        reserva. Uma resposta sem Brave seria uma resposta inventada.</step>
       <step>Leia o resto de $ARGUMENTS. Classifique: factual · comparativa ·
         panorama · aprofundamento · procedural · depuração.</step>
       <step>Decida o MODO (ver `modes`). Padrão rajada-única.</step>
       <step>Escreva o ENTREGÁVEL em uma frase: a forma exata da resposta.
         Artigo, tabela comparativa, ranking, guia passo-a-passo, veredito.</step>
       <step>Defina {{SLUG}} e crie `research/{{SLUG}}/` e
-        `research/{{SLUG}}/handoffs/`.</step>
+        `research/{{SLUG}}/handoffs/`. Crie também
+        `research/{{SLUG}}/SOURCES.txt` VAZIO: é o ledger de URLs que o C3 lê,
+        e um C3 sem ele não dispara.</step>
     </steps>
   </phase>
 
@@ -351,18 +436,44 @@ metadata:
         DIVIDA O ORÇAMENTO: cada comando surf-search-* no prompt T3 leva
         `--sub-agents=max(1, floor(N / <tamanho desta rajada>))`. Os dois níveis
         se somam, não se multiplicam — sem isso, 10 sub-agentes com o default de
-        10 são 100 requisições simultâneas ao Brave.</step>
+        10 pedem 100 requisições ao Brave, que chegam ENFILEIRADAS e não
+        simultâneas enquanto o limitador de taxa estiver armado. O preço é
+        latência, não erro: a rajada inteira fica parada esperando a fila
+        drenar no ritmo do plano.</step>
       <step>Barreira.</step>
       <step>Registre cada handoff: resposta, confiança, fontes, caminho do
-        arquivo. Marque RESPONDIDA, ou BLOQUEADA quando o contador de
-        `cli-falhou` estourar. Esse contador conta disparos SEUS, nunca as
-        tentativas internas do sub-agente.
+        arquivo. O STATUS SAI DA LEITURA DE UMA PALAVRA, não de julgamento —
+        olhe o campo `**Confidence:**` do handoff antes de escrever:
+        `High` ou `Medium` → RESPONDIDA.
+        `Low` → RESPONDIDA-FRACA, e nunca RESPONDIDA (I4). Ela não entra no
+        CONTEXTO ESTABELECIDO, não vira citação sem ressalva, e conta em H.
+        Contador de `cli-falhou` estourado → BLOQUEADA, que tem letra própria
+        na contagem (I5, letra I) e linha própria em "Questões em aberto".
+        Bloqueada não some.
+        Esse contador conta disparos SEUS, nunca as tentativas internas do
+        sub-agente.
         NÃO EXISTE MAIS FALLBACK. A v8 é Brave-only: se a CLI falhar, a dúvida
         fica BLOQUEADA e entra no relatório como tal. Um sub-agente que
         contorne a CLI com WebSearch/WebFetch produz uma fonte que a skill não
         pode auditar nem citar — trate esse handoff como BLOQUEADO, não como
         resposta. Se a CLI sair com 78 é a chave, não a rede: pare a rajada
         inteira (fase 0, portão da chave).</step>
+      <step>ATUALIZE O LEDGER DE FONTES — é o que transforma o C3 em conta e
+        não em palpite. Cada handoff T3 devolve
+        `Arquivo de URLs: {{HANDOFF_DIR}}/{{DOUBT_ID}}.urls.txt`, com uma URL
+        canônica por linha, extraída do `--json` da própria CLI. Leia esses
+        arquivos, acrescente a `research/{{SLUG}}/SOURCES.txt` toda URL que
+        ainda não estiver lá — e só essas —, e reescreva o arquivo com uma URL
+        por linha, sem cabeçalho, sem linha em branco, sem repetição, e
+        TERMINANDO com quebra de linha (sem ela o `wc -l` perde a última URL e
+        o C3 dispara cedo). Então rode
+        `wc -l research/{{SLUG}}/SOURCES.txt`. Esse inteiro é `U(N)`, o
+        número de fontes distintas depois da rajada N: anote-o na linha
+        CONTAGEM do `DOUBTS.md` e na tabela de rajadas do T8. O C3 compara
+        `U(N)` com `U(N-1)` — dois inteiros lidos do disco, nada mais.</step>
+      <step>Reescreva as duas linhas de comentário no topo do `DOUBTS.md`
+        (BARREIRA e CONTAGEM) com os números desta rajada. A identidade I5 tem
+        de fechar AQUI, não só na entrega.</step>
     </steps>
   </phase>
 
@@ -370,6 +481,10 @@ metadata:
     <objective>Decidir quais dúvidas novas merecem existir. Você faz isto,
       sozinho, sem sub-agente. É barato e é a decisão mais importante do loop.</objective>
     <steps>
+      <step>PASSO 0 — releia a linha `<!-- BARREIRA rajada N: em-voo=X
+        recebidos=Y -->` no `DOUBTS.md` em disco. Se `Y < X`, você NÃO está na
+        fase 4: volte a esperar (R5). Turno que passou sem notificação nova é
+        espera, não permissão. Só com `Y == X` siga.</step>
       <step>Junte todas as "dúvidas novas" declaradas nos handoffs, mais as que
         VOCÊ tem ao ler as respostas: o que ficou pressuposto sem prova, o que
         duas fontes contam diferente, o que a resposta implica e não fecha.</step>
@@ -382,8 +497,12 @@ metadata:
           interessante saber" reprova.</gate>
         <gate id="G3" name="respondível">Existe evidência que plausivelmente a
           feche — publicada na web, no repositório, ou na conversa em que esta
-          skill foi carregada. Pergunta sobre o futuro ou sobre intenção de
-          terceiros reprova.</gate>
+          skill foi carregada. G3 reprova por UMA destas quatro causas, e só
+          por elas; o motivo registrado tem de nomear a letra: (a) evento
+          futuro; (b) intenção de terceiro; (c) dado privado não publicado;
+          (d) a pergunta não é factual. Fora dessas quatro, NA DÚVIDA ADMITA —
+          o custo de uma dúvida a mais é um sub-agente; o de uma a menos é uma
+          resposta errada.</gate>
         <gate id="G4" name="não-regressiva">Não é mais um degrau de "por quê"
           sobre algo já suficientemente respondido, nem refinamento de precisão
           que a resposta não usa. Cheque a cadeia de origem (I3): se a dúvida
@@ -394,7 +513,12 @@ metadata:
         rota é dúvida que ninguém dispara; a coluna Rota só fica "—" para
         DESCARTADA e DUPLICATA.</step>
       <step>Registre TODA candidata, inclusive as reprovadas, com o motivo da
-        reprovação. Elas nunca mais voltam (I1).</step>
+        reprovação. Elas nunca mais voltam (I1). Cada reprovada em G2, G3 ou G4
+        ganha também uma linha na tabela "Dúvidas recusadas no portão" do T8,
+        com o portão e o motivo em uma linha (G3 nomeia a letra a/b/c/d). As
+        reprovadas em G1 ficam só no contador, com o `Dn` de que são duplicata.
+        Um `E` inteiro e mudo esconde justamente as perguntas que VOCÊ decidiu
+        não fazer — e é isso que esta skill promete não fazer.</step>
       <step>Bifurque pelo modo:
         <branch mode="rajada-única">Pare. As admitidas viram "Questões em
           aberto" na resposta final, cada uma com o que a fecharia. Vá para a
@@ -409,6 +533,20 @@ metadata:
   <phase id="5" name="VERIFICAÇÃO">
     <objective>Atacar o que foi encontrado, e checar o que não foi.</objective>
     <steps>
+      <step>PORTÃO DE SÍNTESE — passo 0, antes de emitir T4 ou T5. RELEIA
+        `research/{{SLUG}}/DOUBTS.md` DO DISCO, linha a linha. Não use a sua
+        lembrança do registro: depois de quatro rajadas ela diverge do arquivo,
+        e é o ARQUIVO que o auditor e o sintetizador vão ler. Quatro perguntas,
+        todas respondíveis com sim ou não olhando o arquivo:
+        (1) Alguma linha ainda em EM-VOO? Se sim, você não está na fase 5 —
+            volte a esperar (R5).
+        (2) Toda linha ABERTA, BLOQUEADA ou RESPONDIDA-FRACA tem preenchido "o
+            que a fecharia"? Se não, preencha antes de seguir.
+        (3) A identidade `A = B + C + G + E + I + H + F` fecha (I5)? Se não, o
+            registro está errado — conserte o registro.
+        (4) `wc -l research/{{SLUG}}/SOURCES.txt` bate com o último `U(N)`
+            anotado na linha CONTAGEM, e o arquivo não tem URL repetida?
+        Um "não" em qualquer uma das quatro impede a emissão do T4 e do T5.</step>
       <step>Consolide `research/{{SLUG}}/FINDINGS.md` a partir do registro
         inteiro — TODAS as rajadas, não só a última.</step>
       <step>Emita NA MESMA MENSAGEM: o revisor adversarial (T4) e o auditor de
@@ -416,14 +554,26 @@ metadata:
         "isto responde a pergunta?". São falhas diferentes e precisam de olhos
         diferentes. Alto risco: três T4 em paralelo com lentes distintas
         (atualidade · autoridade · reprodutibilidade), matando a afirmação com
-        2 de 3 refutações — é a rajada de confiança de `burst-kinds`.</step>
+        2 de 3 refutações — é a rajada de confiança de `burst-kinds`.
+        O T5 recebe o CAMINHO `research/{{SLUG}}/DOUBTS.md` e é instruído a
+        lê-lo do disco. NUNCA cole o registro no prompt: um registro colado é a
+        sua lembrança dele, e o que o auditor auditaria seria a lembrança.</step>
       <step>Afirmação REFUTADA sai ou é corrigida; SOLITÁRIA fica com ressalva
         escrita.</step>
       <step>Toda dúvida que o auditor marcou "nominalmente respondida,
         materialmente aberta" volta de RESPONDIDA para ABERTA no registro —
         nos DOIS modos. Sem isso o sintetizador a lê como fechada e a afirma
         sem ressalva.</step>
-      <step>Bifurque pelo veredito do auditor (T5):
+      <step>REPROVAÇÃO DE CONTABILIDADE do T5 — identidade que não fecha, linha
+        ainda EM-VOO, ou linha RESPONDIDA cujo handoff diz `Confidence: Low` —
+        NÃO é lacuna de pesquisa e não vira questão em aberto: é erro de
+        registro, e erro de registro se conserta. A RESPONDIDA sobre handoff
+        Low vira RESPONDIDA-FRACA; a EM-VOO recebe o status que o handoff
+        dela manda; a identidade é refeita. Depois refaça as quatro perguntas
+        do portão de síntese e siga. Isso não abre rajada e não gasta um
+        segundo T5.</step>
+      <step>Bifurque pelo veredito do auditor (T5) — ele escreve em inglês:
+        `READY FOR SYNTHESIS` é PRONTO PARA SÍNTESE, `MISSING` é FALTA:
         <branch verdict="PRONTO PARA SÍNTESE">Fase 6.</branch>
         <branch verdict="FALTA" mode="rajada-contínua" condition="abaixo do teto vigente (6, ou 12 se estendido por C4)">
           Dispare uma rajada de correção com as lacunas apontadas. Quando ela
@@ -445,9 +595,13 @@ metadata:
       <step>UM sub-agente sintetizador (T6). Nunca dois. Leitura paraleliza;
         redação não — dois escritores produzem duas premissas implícitas
         incompatíveis.</step>
-      <step>Ele lê o registro inteiro, os handoffs completos em disco e a
-        auditoria de cobertura, e escreve `research/{{SLUG}}/ANSWER.md` no
-        formato do entregável, com citações [n] e a tabela de fontes.</step>
+      <step>Ele recebe o CAMINHO `research/{{SLUG}}/DOUBTS.md` — nunca uma
+        cópia colada — e lê do disco o registro inteiro, os handoffs completos
+        e a auditoria de cobertura; então escreve `research/{{SLUG}}/ANSWER.md`
+        no formato do entregável, com citações [n] e a tabela de fontes. A
+        tabela "Questões em aberto" dele tem exatamente `F + I + H` linhas
+        (I5), e toda afirmação apoiada numa RESPONDIDA-FRACA sai com ressalva
+        escrita.</step>
     </steps>
   </phase>
 
@@ -476,16 +630,41 @@ metadata:
 
 <convergence>
   <applies-to>rajada-contínua</applies-to>
-  <rule id="C1" name="rajada seca">Rajada que termina com ZERO dúvidas
-    admitidas no portão é uma rajada seca. Incremente o contador de secas.
-    Qualquer dúvida admitida zera o contador.</rule>
+  <rule id="C1" name="rajada seca — e o que NÃO é seca">Rajada que ADMITIU
+    pelo menos uma dúvida no portão não é seca: zere o contador de secas e
+    siga. Só quando a rajada admitiu ZERO é que a pergunta importa — e ela tem
+    duas respostas muito diferentes, que se separam por uma conta e não por
+    impressão. Seja `S` o número de dúvidas DISPARADAS nela (as que você marcou
+    EM-VOO) e `R` quantas voltaram RESPONDIDA com confiança Média ou Alta —
+    RESPONDIDA-FRACA e BLOQUEADA não entram em `R`:
+    · `2*R >= S` → rajada SECA. A rajada funcionou e não sobrou dúvida:
+      incremente o contador de secas.
+    · `2*R < S` → rajada ESTÉRIL, não seca. Ela NÃO incrementa o contador de
+      secas e não pode disparar C2. Não houve dúvida nova porque não houve
+      resposta — e dúvida nova nasce de resposta (fase 4). "Não conseguimos
+      pesquisar" não é "esgotamos o assunto". Aplique `rajada-estéril`:
+      reformule mais estreito e re-dispare, no máximo 2 vezes.
+    Anote na tabela do T8 qual das duas foi. Uma pesquisa NUNCA converge por
+    saturação enquanto o motivo de não haver dúvida nova for não haver
+    resposta. DUAS estéreis consecutivas também param a pesquisa, mas o motivo
+    de parada declarado no T8 é "pesquisa impedida (rajadas estéreis)" — jamais
+    "saturação".</rule>
   <rule id="C2" name="paciência k=2">Pare com DUAS rajadas secas consecutivas.
     Uma só não basta: trajetórias de pesquisa raramente convergem de forma
     monotônica, e parar na primeira seca produz parada falsa com evidência
-    ainda chegando.</rule>
-  <rule id="C3" name="saturação de fontes">Pare também se uma rajada inteira
-    não trouxe nenhuma fonte inédita — as buscas estão circulando no mesmo
-    material.</rule>
+    ainda chegando. Estéril não é seca (C1) e não entra nesta conta.</rule>
+  <rule id="C3" name="saturação de fontes — dois inteiros">Pare também quando a
+    rajada não trouxe NENHUMA fonte inédita. Isso não é impressão, é
+    `U(N) == U(N-1)`: `U(N)` é o `wc -l` de `research/{{SLUG}}/SOURCES.txt`
+    depois da rajada N (fase 3, passo do ledger de fontes) e `U(N-1)` é o mesmo
+    inteiro anotado depois da rajada anterior. Os dois vão na tabela de rajadas
+    do T8, coluna "Fontes distintas". Se você não tem os DOIS inteiros em
+    disco, C3 não dispara — decida por C1/C2. E C3 NÃO VALE para rajada
+    ESTÉRIL (C1): uma rajada em que a maioria falhou não traz fonte inédita
+    porque não buscou, não porque o material acabou — chamar isso de saturação
+    de fontes é o mesmo erro com outro nome. Fora esses dois casos, C3 nunca é
+    palpite: é uma comparação de dois números que qualquer um refaz lendo o
+    arquivo.</rule>
   <rule id="C4" name="teto duro">Teto de 6 rajadas. Se a rajada 6 fechar com
     dúvidas admitidas (contador de secas em 0) e C3 não tiver disparado,
     estenda o teto até 12 e registre a extensão no relatório. 12 é o máximo
@@ -526,7 +705,11 @@ metadata:
       rajada seguinte (contínua) ou em "Questões em aberto" (única).</rule>
     <rule>OS DOIS NÍVEIS NÃO PODEM MULTIPLICAR. Cada sub-agente T3 chama a CLI,
       que tem o SEU próprio leque paralelo. Se você dispara 10 sub-agentes e
-      cada um usa o default de 10, são 100 requisições simultâneas ao Brave.
+      cada um usa o default de 10, são 100 requisições PEDIDAS ao Brave — que
+      chegam enfileiradas, não simultâneas, enquanto o limitador de taxa
+      estiver armado: o ledger dele é cross-process, compartilhado por todos os
+      sub-agentes, que são processos separados. O preço é latência — a rajada
+      inteira espera a fila drenar no ritmo do plano —, não erro.
       Por isso todo prompt de rajada carrega
       `--sub-agents=max(1, floor(N / <tamanho da rajada>))`. Com N=10 e uma
       rajada de 5, cada sub-agente recebe `--sub-agents=2`.</rule>
@@ -579,6 +762,9 @@ metadata:
   <case id="fork-indisponível">`Agent type 'fork' not found` — modo fork desligado. Cai para INLINE.</case>
   <case id="teto-de-sessão">`Subagent spawn limit reached` — 200 na sessão. Pare de disparar rajadas.</case>
   <case id="rajada-vazia">Rajada inteira sem achado. Retentativa da MESMA rajada, não uma nova.</case>
+  <case id="rajada-estéril">Menos da metade das dúvidas disparadas voltou RESPONDIDA com confiança
+    Média ou Alta. Não é seca: não conta para a convergência, e parar por causa dela é
+    "pesquisa impedida", nunca "saturação".</case>
   <case id="deriva-de-dúvida">As dúvidas novas já não falam da pergunta original.</case>
   <case id="irmãos-incompatíveis">Dois handoffs da mesma rajada não podem ser ambos verdadeiros.</case>
   <case id="web-contradiz-projeto">O achado na web contradiz o contexto local.</case>
@@ -590,7 +776,10 @@ metadata:
   prestação de contas da rajada: quantas dúvidas nasceram, quantas o contexto
   matou sem gastar busca, quantas foram descartadas no portão e por quê, e o
   que ficou em aberto. Sem esses números, "pesquisa concluída" não significa
-  nada.</final-report>
+  nada. A conta tem de FECHAR: `A = B + C + G + E + I + H + F` (I5), e a tabela
+  "Questões em aberto" tem exatamente `F + I + H` linhas. Relatório cuja
+  identidade não fecha é relatório com dúvida evaporada — e uma dúvida que
+  evapora é exatamente a resposta entregue com furo que ninguém declarou.</final-report>
 
 <examples>
   <example question="pgvector ou Qdrant para busca semântica neste projeto?" mode="rajada-única">
