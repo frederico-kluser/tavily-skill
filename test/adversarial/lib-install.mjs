@@ -326,8 +326,15 @@ section('search(): shapes and discovery');
 
 section('searchParallel(): the fan-out width');
 {
+  // settle() under this loop, and why: every call below is KEYLESS
+  // (braveKeys: []), and the G4 fix makes a keyless fan-out REJECT on the
+  // gate instead of resolving. A bare await would then be an unhandled
+  // rejection that kills this whole suite — probe A of the audit died exactly
+  // here. Both readings are legitimate and must coexist (the same two-reading
+  // settle() the G4 block above uses): when the call still resolves, the
+  // concurrency pin holds; when it rejects, the rejection must carry the
+  // exit-78 gate contract.
   const widths = [
-    ['0 silently becomes the default 10', { subAgents: 0 }, 10],
     ['a negative width becomes the default', { subAgents: -5 }, 10],
     ['a non-numeric width becomes the default', { subAgents: 'many' }, 10],
     ['NaN becomes the default', { subAgents: NaN }, 10],
@@ -339,12 +346,23 @@ section('searchParallel(): the fan-out width');
     ['subAgents wins over concurrency', { subAgents: 2, concurrency: 9 }, 2],
   ];
   for (const [label, opts, expected] of widths) {
-    const out = await lib.searchParallel(['a'], { ...opts, braveKeys: [], skipConfigFile: true, skipDotenv: true });
-    eq(label, out.summary.concurrency, expected);
+    const w = await settle(() => lib.searchParallel(['a'], { ...opts, braveKeys: [], skipConfigFile: true, skipDotenv: true }));
+    if (w.resolved) eq(label, w.value.summary.concurrency, expected);
+    else ok(label, w.error && w.error.code === 'BraveKeyMissing' && w.error.exitCode === 78,
+      `rejected ${w.error && w.error.name}/${w.error && w.error.code}, exitCode=${w.error && w.error.exitCode}`);
   }
+  // NOT a contract. This used to be the eq() table row "0 silently becomes
+  // the default 10" — an eq() that pinned the DEFECT (subAgents:0 read as
+  // "unset", so it became 10) as correct behaviour. The C1 fix makes the code
+  // return 1, so that eq() read "got 1" and failed the run instead of flipping
+  // the bug — probe B of the audit. The condition below is that row's own
+  // condition (concurrency === 10), unchanged; only the channel changed, so a
+  // fix reads FIXED instead of failing the run. It is settle()'d for the same
+  // reason as the loop: keyless, it rejects once G4 lands.
+  const c1 = await settle(() => lib.searchParallel(['a'], { subAgents: 0, braveKeys: [], skipConfigFile: true }));
   bug('C1', 'subAgents:0 means "no fan-out" to a caller but is read as "unset" and becomes 10',
-    (await lib.searchParallel(['a'], { subAgents: 0, braveKeys: [], skipConfigFile: true })).summary.concurrency === 10,
-    'search.mjs:92-95 — Number(0) is finite but not > 0, so it falls through to the default');
+    c1.resolved && c1.value.summary.concurrency === 10,
+    'search.mjs — Number(0) is finite but not > 0, so it fell through to the default');
 }
 {
   for (const [label, q] of [['null', null], ['a number', 42], ['an empty array', []],
@@ -352,22 +370,38 @@ section('searchParallel(): the fan-out width');
     const r = await rejects(() => lib.searchParallel(q, { braveKeys: [], skipConfigFile: true, skipDotenv: true }));
     ok(`searchParallel(${label}) rejects`, r.threw && /at least one non-empty query/.test(r.message || ''), r.message);
   }
-  const single = await lib.searchParallel('a bare string', { braveKeys: [], skipConfigFile: true });
-  eq('a bare string is wrapped into one item', single.summary.total, 1);
-  const obj = await lib.searchParallel({ q: 'object form' }, { braveKeys: [], skipConfigFile: true });
-  eq('a bare object is wrapped into one item', obj.summary.total, 1);
-  const mixed = await lib.searchParallel(['keep', { q: '' }, { query: 'also keep' }, 'keep too'],
-    { braveKeys: [], skipConfigFile: true });
-  eq('empty items are dropped, the rest survive', mixed.summary.total, 3);
-  const huge = await lib.searchParallel(Array.from({ length: 200 }, (_, i) => `q${i}`),
-    { braveKeys: [], skipConfigFile: true });
-  eq('a 200-query fan-out does not blow up', huge.summary.total, 200);
+  // settle(), same keyless trap as the widths loop: the G4 fix turns these
+  // resolutions into gate rejections. The shape pins hold in the resolving
+  // regime; a rejection must carry the exit-78 gate contract instead.
+  const single = await settle(() => lib.searchParallel('a bare string', { braveKeys: [], skipConfigFile: true }));
+  if (single.resolved) eq('a bare string is wrapped into one item', single.value.summary.total, 1);
+  else ok('a bare string is wrapped into one item', single.error && single.error.code === 'BraveKeyMissing' && single.error.exitCode === 78,
+    `rejected ${single.error && single.error.name}/${single.error && single.error.code}, exitCode=${single.error && single.error.exitCode}`);
+  const obj = await settle(() => lib.searchParallel({ q: 'object form' }, { braveKeys: [], skipConfigFile: true }));
+  if (obj.resolved) eq('a bare object is wrapped into one item', obj.value.summary.total, 1);
+  else ok('a bare object is wrapped into one item', obj.error && obj.error.code === 'BraveKeyMissing' && obj.error.exitCode === 78,
+    `rejected ${obj.error && obj.error.name}/${obj.error && obj.error.code}, exitCode=${obj.error && obj.error.exitCode}`);
+  const mixed = await settle(() => lib.searchParallel(['keep', { q: '' }, { query: 'also keep' }, 'keep too'],
+    { braveKeys: [], skipConfigFile: true }));
+  if (mixed.resolved) eq('empty items are dropped, the rest survive', mixed.value.summary.total, 3);
+  else ok('empty items are dropped, the rest survive', mixed.error && mixed.error.code === 'BraveKeyMissing' && mixed.error.exitCode === 78,
+    `rejected ${mixed.error && mixed.error.name}/${mixed.error && mixed.error.code}, exitCode=${mixed.error && mixed.error.exitCode}`);
+  const huge = await settle(() => lib.searchParallel(Array.from({ length: 200 }, (_, i) => `q${i}`),
+    { braveKeys: [], skipConfigFile: true }));
+  if (huge.resolved) eq('a 200-query fan-out does not blow up', huge.value.summary.total, 200);
+  else ok('a 200-query fan-out does not blow up', huge.error && huge.error.code === 'BraveKeyMissing' && huge.error.exitCode === 78,
+    `rejected ${huge.error && huge.error.name}/${huge.error && huge.error.code}, exitCode=${huge.error && huge.error.exitCode}`);
 }
 {
-  const dupIds = await lib.searchParallel([{ id: 'same', q: 'a' }, { id: 'same', q: 'b' }],
-    { braveKeys: [], skipConfigFile: true });
+  // settle(), same keyless trap as the widths loop: once G4 lands, this call
+  // rejects on the gate, so the collision shape is only observable while it
+  // still resolves. The bug() reads FIXED in the rejecting regime without
+  // changing what it measures — the rejection's own gate contract is what the
+  // G4 block asserts.
+  const dupIds = await settle(() => lib.searchParallel([{ id: 'same', q: 'a' }, { id: 'same', q: 'b' }],
+    { braveKeys: [], skipConfigFile: true }));
   bug('C2', 'caller-supplied ids are not checked for collisions — two batches come back with the same id',
-    dupIds.data.batches[0].id === dupIds.data.batches[1].id,
+    dupIds.resolved && dupIds.value.data.batches[0].id === dupIds.value.data.batches[1].id,
     'a caller keying results by id silently loses one');
 }
 {
