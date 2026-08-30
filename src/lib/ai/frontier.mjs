@@ -12,31 +12,63 @@
 // rather than re-searching.
 //
 // Three invariants, borrowed from the burst discipline in SKILL.md:
-//   · A rejected candidate is RECORDED, never silently dropped. Forgetting
-//     rejections is how a loop re-proposes the same dead query every round and
-//     never converges.
+//   · A rejected candidate is RECORDED, never silently dropped — but the
+//     record is an AUDIT, not a life sentence. Only a query that was actually
+//     ADMITTED bars its own key forever; a candidate turned away for a
+//     CIRCUMSTANTIAL reason (too deep for the wave it arrived in, priority
+//     below the floor at the time, its branch closed) may come back when the
+//     circumstance changes. Blacklisting those was how the loop refused a
+//     legitimate question and then reported it as a duplicate.
 //   · One node is one closed question. Two questions in one node produce an
 //     answer that closes neither.
 //   · The wave width is a hard ceiling, never a target. Running fewer nodes
 //     because the frontier is thin is correct behaviour, not underuse.
 
 /**
- * Normalised token set, used for near-duplicate detection across rounds.
+ * Normalised token SEQUENCE, used for near-duplicate detection across rounds.
  *
- * Short tokens are dropped as noise EXCEPT when they contain a digit. That
- * exception is load-bearing: version numbers are short, and collapsing them
- * would make "gpt 4 pricing" and "gpt 5 pricing" the same query — silently
- * refusing to research the second one.
+ * The costs here are asymmetric, and that asymmetry decides every choice in
+ * this function. A key that is too LOOSE costs one repeated Brave request. A
+ * key that COLLIDES refuses a legitimate question and then records the refusal
+ * as "duplicate" — so the run report tells the user their question was already
+ * asked when it never was. The second failure is invisible to the user, so the
+ * key is built to never collide, and tolerates being loose.
+ *
+ * Two properties are load-bearing:
+ *
+ *   · TOKEN ORDER IS KEPT. The order of a relation is its content:
+ *     "docker faster than podman" and "podman faster than docker" are opposite
+ *     questions, and "migrate from postgres to mysql" is not its own reverse.
+ *     Sorting the tokens made each of those pairs one key.
+ *   · SHORT TOKENS ARE KEPT. Languages and tools have short names — Go, R,
+ *     C++ (which normalises to "c") — so dropping <=2-char tokens collapsed
+ *     "Go vs Rust performance" and "C++ vs Rust performance" into one query.
+ *     Keeping every token also makes the old digit exception unnecessary:
+ *     "gpt 4 pricing" and "gpt 5 pricing" stay distinct because 4 and 5 are
+ *     still there, not because of a carve-out.
+ *
+ * A query with no token longer than two characters and no digit anywhere
+ * ("a an of to in on") names no subject at all. It gets the empty key, and
+ * admit() refuses it as content-free instead of spending a request on filler.
+ *
+ * No filler-word list is applied, and that omission is deliberate: dropping
+ * words like "the", "for" or "and" before hashing makes MORE different
+ * questions share a key — the exact failure above. The looseness it leaves
+ * behind (prefixing one filler word evades the dedup, for the price of a
+ * single request) is accepted debt, tracked as BUG-35 in
+ * test/adversarial/loop-frontier.mjs.
  */
 export function queryKey(q) {
-  return String(q || '')
+  const tokens = String(q || '')
     .toLowerCase()
     .replace(/[^\p{L}\p{N}\s.]/gu, ' ')
     .split(/\s+/)
     .map(w => w.replace(/^\.+|\.+$/g, ''))
-    .filter(w => w && (w.length > 2 || /\d/.test(w)))
-    .sort()
-    .join(' ');
+    .filter(Boolean);
+  // No content word anywhere -> no key. This is the ONLY place shortness still
+  // decides anything, and it judges the whole query, never a single token.
+  if (!tokens.some(w => w.length > 2 || /\d/.test(w))) return '';
+  return tokens.join(' ');
 }
 
 let seq = 0;
@@ -69,6 +101,8 @@ export class Frontier {
   constructor({ maxDepth = 3, minPriority = 0.15 } = {}) {
     this.nodes = [];             // open nodes, kept sorted by priority desc
     this.seen = new Set();       // every query key ever proposed, admitted or not
+    this.admittedKeys = new Set(); // keys that were ADMITTED — the only permanent bar
+    this.usedIds = new Set();    // every id handed to an admitted node, ever
     this.rejected = [];          // {q, reason} — the audit trail
     this.closed = new Set();     // sub-question ids that are done
     this.branchMiss = new Map(); // sub → consecutive uninformative results
@@ -93,24 +127,46 @@ export class Frontier {
     const key = queryKey(node.q);
     if (!node.q) return this.#reject(node, 'empty query');
     if (!key) return this.#reject(node, 'query has no content words');
-    if (this.seen.has(key)) return this.#reject(node, 'duplicate of a query already proposed');
+    // Only an ADMITTED key is a duplicate. `seen` also holds every candidate
+    // that was ever turned away, and those refusals were circumstantial.
+    if (this.admittedKeys.has(key)) return this.#reject(node, 'duplicate of a query already admitted');
     if (node.depth > this.maxDepth) return this.#reject(node, `deeper than the depth cap (${this.maxDepth})`);
     if (this.closed.has(node.sub)) return this.#reject(node, `branch '${node.sub}' is already closed`);
     if (node.priority < this.minPriority) return this.#reject(node, `priority ${node.priority} below the admission threshold`);
 
+    // One id is one query, for the whole run: the ledger table, the [id]
+    // headers in the digest and the parent map are all keyed by it, so a
+    // reused id would silently merge two different queries into one row.
+    node.id = this.#uniqueId(node.id);
+    this.usedIds.add(node.id);
     this.seen.add(key);
+    this.admittedKeys.add(key);
     this.nodes.push(node);
     this.nodes.sort((a, b) => b.priority - a.priority || a.depth - b.depth);
     return { admitted: true, node };
   }
 
   #reject(node, reason) {
-    // Record BEFORE returning: a rejected query must never be proposable again,
-    // or the analyst re-suggests it every round and the loop never converges.
+    // Record it, but do NOT bar the key. `seen` is the audit counter — what was
+    // ever proposed — while `admittedKeys` is the bar, and only admission fills
+    // that. Barring on rejection meant a query refused for being too deep in
+    // wave 2 could never be asked at depth 0 in wave 3, and the refusal came
+    // back labelled "duplicate", which was a lie. Re-proposing a still-barred
+    // query is cheap: it is refused again here, without a request, and the
+    // orchestrator's dry-spell counter still ends a loop that only repeats.
     const key = queryKey(node.q);
     if (key) this.seen.add(key);
     this.rejected.push({ q: node.q, sub: node.sub, depth: node.depth, reason });
     return { admitted: false, reason };
+  }
+
+  /** The requested id when it is free, a suffixed variant when it is taken. */
+  #uniqueId(wanted) {
+    const base = String(wanted == null ? '' : wanted).trim() || nextId('n');
+    if (!this.usedIds.has(base)) return base;
+    let n = 2;
+    while (this.usedIds.has(`${base}#${n}`)) n += 1;
+    return `${base}#${n}`;
   }
 
   /** Mark a sub-question finished; its pending nodes are dropped. */
@@ -203,10 +259,40 @@ export class Frontier {
     return picked;
   }
 
-  /** Compact snapshot for the run report. */
+  /**
+   * Compact snapshot for the run report.
+   *
+   * PURE ADDITION ONLY. render.mjs and the ledger already read `pending`,
+   * `closed_branches`, `rejected`, `rejected_total` and `seen_queries` by
+   * name; nothing here may be renamed or dropped.
+   *
+   * `pending_queries` exists because the COUNT alone is half an answer. "This
+   * run answered with 8 queries still queued" tells the user a doubt was left
+   * open but never WHICH one, and a doubt you cannot name is a doubt you
+   * cannot go and settle. The nodes are kept sorted by priority, so the names
+   * published first are the ones the run most wanted to ask.
+   *
+   * It is the same class of data the snapshot has always published in
+   * `rejected[].q`: query text written by the planner or the analyst. It is
+   * never a URL, so it carries none of the embedded-credential risk that
+   * canonicalUrl handles — and any secret a user pastes into the question
+   * already reaches Brave and the ledger long before this line runs.
+   */
   toJSON() {
+    const PENDING_CAP = 50;
+    const pending_queries = this.nodes.slice(0, PENDING_CAP).map(n => n.q);
+    const omitted = this.nodes.length - pending_queries.length;
+    // Never truncate in silence — that is the exact sin this pass is undoing.
+    // The notice rides INSIDE the array so a consumer that only prints the
+    // list still shows the cut, and the count is published as a field for one
+    // that reads the shape.
+    if (omitted > 0) {
+      pending_queries.push(`… and ${omitted} more queued quer${omitted === 1 ? 'y' : 'ies'} not listed`);
+    }
     return {
       pending: this.nodes.length,
+      pending_queries,
+      pending_queries_omitted: omitted > 0 ? omitted : 0,
       closed_branches: [...this.closed],
       rejected: this.rejected.slice(0, 50),
       rejected_total: this.rejected.length,
