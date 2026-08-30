@@ -428,6 +428,7 @@ Registrado para que ninguém reabra o que já foi feito.
 | `keys add` recusando uma chave **boa** com a rede caída | onda 3.2 | `gate-state` 223/0, 24 fixed |
 | `H13` — `cleanupLegacy()` apagando a skill de terceiro com nome legado | onda 4.1 | `✓ FIXED H13` |
 | `README` — `BraveKeyUnverified` sem documentação; `:871` mandando "replace" antes de `keys reset`; 14 afirmações falsas | onda 3.7 | commit `d49577e` |
+| Onda 7 (2026-08-30): barreira entre rajadas reescrita como imposição por fluxo com artefato em disco (`SKILL.md` R4/R5) | onda 7, commit `c144dbd` | a trava por parâmetro inexistente (`run_in_background`) foi substituída por mecanismo verificável — linha `<!-- BARREIRA rajada N: em-voo=X recebidos=0 -->` no topo do `DOUBTS.md`, relida na fase 4 |
 
 ---
 

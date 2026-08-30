@@ -72,6 +72,8 @@ Fora do escopo de "prompt vs. código", mas registradas porque o parent pergunto
 
 - `SKILL.md:28`, `:220-224`, `references/failure-modes.md:64-68`: `fork` exige `CLAUDE_CODE_FORK_SUBAGENT=1`; "os tipos embutidos são `Explore`, `Plan` e `general-purpose`". Nesta sessão o roster de agentes expõe também `claude`, `claude-code-guide` e `statusline-setup` — a lista de embutidos do prompt está desatualizada em relação ao ambiente vivo, mas isso é drift de harness, não do repositório.
 - `SKILL.md:113-122` (R4): manda passar `run_in_background: false` em toda chamada `Agent`. **Esse parâmetro não existe no schema da ferramenta `Agent` desta sessão** (o schema aceita `description`, `isolation`, `model`, `prompt`, `subagent_type`). A skill antecipa o caso em `:119-122` ("Se o parâmetro não existir no schema desta sessão, não o invente") e cai para a barreira contável da R5 — o desenho está certo, mas na prática a **regra R4 é letra morta e a R5 é a única barreira que existe**. Isso importa para B-06.
+
+  > ERRATA (Onda 7, 2026-08-30): o R4/R5 atual da `SKILL.md` substitui a descrição abaixo — a barreira entre rajadas passou a ser imposta pelo **fluxo com artefato em disco** (linha `<!-- BARREIRA rajada N: em-voo=X recebidos=0 -->` no topo do `DOUBTS.md`, relida na fase 4) e `run_in_background` virou **otimização condicionada**, não trava.
 - `SKILL.md:542-550` (`hard-limits`): 20 simultâneos / 200 por sessão. Não verificável aqui.
 
 ---
@@ -204,6 +206,8 @@ O que segue são os furos — cada um com a linha e a redação proposta.
   > **Primeiro passo da fase 4, antes de qualquer julgamento:** releia essa
   > linha no arquivo. Se `recebidos < em-voo`, você não está na fase 4 — volte
   > a esperar. Turno sem notificação nova é espera, não permissão.
+
+  > ERRATA (Onda 7, 2026-08-30): implementado — o `SKILL.md` atual impõe a barreira por fluxo (R4/R5) com a linha `<!-- BARREIRA rajada N: em-voo=X recebidos=0 -->` no topo do `DOUBTS.md`, relida como **primeiro passo da fase 4** antes de "Junte todas as dúvidas novas"; `run_in_background` virou otimização condicionada, não trava.
 
 ---
 

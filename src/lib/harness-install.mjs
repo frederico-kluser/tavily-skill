@@ -48,8 +48,9 @@ const HARNESS_DIR_SUFFIXES = [
   path.join('.pi', 'agent', 'skills'),  // Pi Coding Agent
 ];
 
-// Boot-time snapshot of the harness dirs. Exported — five modules import the
-// binding — so its shape is frozen: it is computed from the home of the FIRST
+// Boot-time snapshot of the harness dirs. Exported — bin/surf.mjs imports the
+// boot snapshot; other call sites use harnessDirs() — so its shape is frozen:
+// it is computed from the home of the FIRST
 // import, which is the home the lifecycle scripts run with. A process that
 // adjusts HOME late (container, partial `sudo -E`, a harness that sets HOME
 // after start) must read harnessDirs() instead, never this constant.
