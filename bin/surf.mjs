@@ -39,12 +39,24 @@ const { HARNESS_DIRS } = harnessInstall;
 const PKG_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const HARNESS_INSTALL_SRC = path.join(PKG_ROOT, 'src', 'lib', 'harness-install.mjs');
 
-const HELP = `surf — multi-skill setup & validation
+// The skill list is READ, never re-typed: the footer and the intro derive the
+// names from SKILLS in src/lib/harness-install.mjs (via canonicalSkillNames
+// above), so a fourth skill shows up here the moment the installer ships it.
+// This used to name two skills by hand — and a third shipped while nobody
+// noticed. The count and the dirs come from the same source, so they cannot
+// drift apart either.
+function buildHelp(names) {
+  const bundle = names.length
+    ? `Bundles ${names.length} skill${names.length === 1 ? '' : 's'} into one command: ${names.join(', ')}.`
+    : 'Bundles the skills this package installs into one command (list unavailable).';
+  const skillDirs = names.length
+    ? names.map(n => `SKILL.md:           ~/.agents/skills/${n}/SKILL.md`).join('\n')
+    : 'SKILL.md files:     (skill list unavailable — check the install)';
+  return `surf — multi-skill setup & validation
 
-Bundles surf-research-skill (Brave web search + the surf-ai autonomous research
-loop) and surf-plan-skill (research-driven execution planning) into one command.
+${bundle}
 
-surf v8 searches with Brave and nothing else. No valid Brave key means every
+surf v${VERSION} searches with Brave and nothing else. No valid Brave key means every
 research command stops with exit 78 — it never answers from somewhere else.
 
 Commands:
@@ -75,10 +87,10 @@ Providers:
 
 Keys live in:        ${KEYS_FILE} (chmod 600)
 Plans live in:       ~/.claude/plans/<slug>-<timestamp>.md (or ./plans/)
-SKILL.md (search):   ~/.agents/skills/surf-research-agent-skill/SKILL.md
+${skillDirs}
 Brave API notes:     references/brave-api.md
-SKILL.md (planning): ~/.agents/skills/surf-plan-agent-skill/SKILL.md
 `;
+}
 
 function out(s = '') {
   stdout.write(s + (s.endsWith('\n') ? '' : '\n'));
@@ -451,7 +463,8 @@ try {
     }
     await interactiveMenu();
   } else if (cmd === '--help' || cmd === '-h') {
-    out(HELP);
+    const { names } = await canonicalSkillNames();
+    out(buildHelp(names));
   } else if (cmd === '--version' || cmd === '-v') {
     out(VERSION);
   } else if (cmd === 'add') {

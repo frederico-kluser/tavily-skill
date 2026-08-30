@@ -91,7 +91,7 @@ plan / design ──▶ surf-plan-agent-skill ──▶ Normal (research-grounde
 | **Status** | v8.0.1 (npm) — **breaking**: Brave-only, see [the changelog](CHANGELOG.md) |
 | **Install** | `npm i -g surf-agent-skill` (Linux · macOS · Windows) |
 | **Search backend** | **Brave Search only.** No fallback provider, no keyless tier. A missing or invalid key is exit 78. |
-| **Skills shipped** | `surf-research-agent-skill` (surf-ai) · `surf-plan-agent-skill` |
+| **Skills shipped** | `surf-research-agent-skill` (surf-ai) · `surf-plan-agent-skill` · `surf-search-agent-skill` |
 | **Bins shipped** | `surf`, `surf-search-normal`, `surf-search-unlimit`, `surf-research-skill`, `surf-plan-skill` |
 | **Runtime** | Node ≥ 18. Zero npm deps. |
 | **Storage** | `~/.config/surf/keys.json` (chmod 600) — the only place a key is ever written. Also caches the free validation verdict for 7 days. `OPENROUTER_API_KEY` is accepted from env, in memory. Library mode reads env/`.env` too ([Security](#security)). |
@@ -101,7 +101,7 @@ plan / design ──▶ surf-plan-agent-skill ──▶ Normal (research-grounde
 ## Quickstart (60 seconds)
 
 ```bash
-npm i -g surf-agent-skill    # installs 2 skills + 5 bins (cross-OS)
+npm i -g surf-agent-skill    # installs every shipped skill + 5 bins (cross-OS)
 surf                         # interactive: add your Brave key, validated LIVE and FREE
                              #   ✓ valid (brave, 340ms, free probe, 0 credits)
                              #   ✗ invalid key (Brave answers 422 SUBSCRIPTION_TOKEN_INVALID) — NOT saved
@@ -164,7 +164,7 @@ Bash call `timeout: 600000`, on Pi core just run it, on GH Copilot CLI run
 # One-liner cross-OS install (Linux, macOS, Windows)
 npm i -g surf-agent-skill
 
-# Postinstall symlinks both skills into every supported harness, initializes
+# Postinstall symlinks every shipped skill into every supported harness, initializes
 # ~/.config/surf/keys.json, and prints a hint. Then:
 
 surf                            # your Brave key — validated live, for free
@@ -353,7 +353,7 @@ columns, and the list of candidates the frontier refused, with reasons.
 ## Supported agents
 
 > **What the installer does and doesn't do.** `npm i -g surf-agent-skill` symlinks
-> both skills into every harness skill dir it knows
+> every shipped skill into every harness skill dir it knows
 > (`~/.agents/skills/`, `~/.claude/skills/`, `~/.codex/skills/`,
 > `~/.pi/agent/skills/`) and creates `~/.config/surf/keys.json`. It writes
 > **no** timeout config anywhere. Raising a bash timeout is a separate,
@@ -364,7 +364,7 @@ columns, and the list of candidates the frontier refused, with reasons.
 
 ```bash
 npm i -g surf-agent-skill
-# Symlinks both skills into ~/.claude/skills/. Writes no settings.
+# Symlinks every shipped skill into ~/.claude/skills/. Writes no settings.
 
 # Per-project, to raise the 120 s default to 300 s:
 cd path/to/your-project
@@ -391,7 +391,7 @@ background** rather than killing it — but don't rely on that: for
 
 ```bash
 npm i -g surf-agent-skill
-# Symlinks both skills into ~/.agents/skills/ — the canonical skill dir
+# Symlinks every shipped skill into ~/.agents/skills/ — the canonical skill dir
 # GH Copilot CLI reads (~/.agents/skills/surf-research-agent-skill, …/surf-plan-agent-skill).
 # Nothing is written under ~/.copilot/.
 ```
@@ -453,7 +453,7 @@ cap; `surf-research-skill project-config` raises that to 300 s (writes
 
 ### OpenCode & Codex CLI
 
-The installer symlinks both skills into both harnesses' canonical dirs
+The installer symlinks every shipped skill into both harnesses' canonical dirs
 (`~/.agents/skills/` for OpenCode, `~/.codex/skills/` for Codex CLI) — but it
 writes **no** timeout config for either, and `project-config` doesn't target
 them (it supports `copilot`, `claude`, `pi`).
@@ -992,7 +992,9 @@ export `SURF_ALLOW_EXPENSIVE=1` for the session.
 │   ├── brave-api.md                   ← what Brave returns, what it doesn't, and every gotcha
 │   └── plan-workflow.md               ← deeper docs on the planning workflow (Normal + Deep ambiguity-sweep mode)
 ├── skills/
-│   └── surf-plan-agent-skill/SKILL.md       ← planning (auto-routes to an ambiguity-sweep mode)
+│   ├── surf-plan-agent-skill/SKILL.md       ← planning (auto-routes to an ambiguity-sweep mode)
+│   └── surf-search-agent-skill/SKILL.md     ← the shallow half of the research pair: ONE
+│                                              question, one search, no sub-agents
 ├── test/
 │   ├── smoke.mjs                      ← offline suite: stubs fetch, temp HOME
 │   ├── brave.mjs                      ← adapter, flags, frontier, key gate — regression tests for every v7 defect
@@ -1033,7 +1035,7 @@ export `SURF_ALLOW_EXPENSIVE=1` for the session.
 │   │   ├── project-config.mjs         ← surf-research-skill project-config
 │   │   ├── progress.mjs               ← stderr progress events
 │   │   ├── check-surf-skill.mjs       ← detect companion CLI in PATH
-│   │   ├── harness-install.mjs        ← cross-OS symlink install for 2 skills
+│   │   ├── harness-install.mjs        ← cross-OS symlink install (every shipped skill)
 │   │   ├── api/                       ← library search / searchParallel
 │   │   └── providers/
 │   │       ├── index.mjs              ← capability map: search → [brave]. That's it.
