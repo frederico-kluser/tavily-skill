@@ -57,7 +57,7 @@ para briefs longos.
 
 | Flag | Padrão | Nota |
 |---|---|---|
-| `--max-queries N` | 6 (normal) / 10 (unlimit) | Queries por rodada, máx 24 |
+| `--max-queries N` | 10 (normal) / 14 (unlimit) | Queries por rodada, máx 40. **Piso invisível:** o valor efetivo é `max(--max-queries, --sub-agents)` — a onda nunca pode ser mais larga que o orçamento de queries. Com o `--sub-agents=10` do default, pedir `--max-queries 4` **não faz nada**: continua 10. Para baixar de verdade, baixe `--sub-agents` junto. |
 | `--sub-agents N` | 10 | Buscas simultâneas, máx 20. Também aceita `--sub-agents=N`. É o ÚNICO orçamento de simultaneidade: vale para a onda e para o pool de workers ao mesmo tempo. Acima do que o plano Brave permite, enfileira (não falha). |
 | `--concurrency N` | — | Alias obsoleto de `--sub-agents`. |
 | `--max-depth N` | 2 (normal) / 3 (unlimit) | Até onde um ramo desce, máx 6. Profundidade 0 são as queries do plano. |
@@ -65,7 +65,7 @@ para briefs longos.
 | `--max-rounds N` | 6 (só unlimit) | Teto duro 50 |
 | `--search-mode` | normal | `fast` \| `normal` \| `slow` |
 | `--ai-model <slug>` | `deepseek/deepseek-v4-pro` | Sobrescreve o LLM |
-| `--budget-ms N` | autodetectado | Passe 600000 para unlimit |
+| `--budget-ms N` | autodetectado | **Só vale em `surf-search-normal`.** Em `unlimit` é ignorado incondicionalmente — o modo roda sem orçamento de tempo, e quem interrompe é o timeout do harness (exit 143), não o surf. Passar `--budget-ms` para `unlimit` não muda nada; o que limita a duração lá é `--max-rounds`. |
 | `--no-budget` | off | Disable self-budget abort — let calls run to provider's per-request ceiling. No-limit harnesses only (Pi core). |
 | `--no-cache` | off | Quando os dados precisam ser frescos |
 | `--json` | off | **Sempre passe** — é o que alimenta o handoff |
@@ -106,18 +106,30 @@ Três sinais, nesta ordem:
 surf-research-skill setup           # chave Brave (obrigatória) + OpenRouter
 surf-research-skill ai-setup        # chave OpenRouter — https://openrouter.ai/keys
 surf-research-skill project-config  # timeout de bash por projeto
+surf-research-skill gate            # valida a chave Brave de graça: 0 = ok, 78 = pare
 ```
+
+`--version`, `--help`, `setup`, `ai-setup`, `keys`, `project-config`,
+`cache-clear` e `cost` **não passam pelo portão da chave** — todos saem 0 sem
+chave Brave nenhuma. Nenhum deles serve para provar que a chave existe. Quem
+prova é `gate`, ou a primeira busca de verdade.
 
 ## Toolbox manual — busca crua
 
-Quando o surf-ai não está disponível (sem chave OpenRouter, por exemplo), o
-sub-agente ainda tem busca crua:
+Quando você quer os resultados sem síntese, o sub-agente tem busca crua:
 
 ```bash
 surf-research-skill search "query" --max 5
 surf-research-skill search "q" --domains docs.rs --time year
 surf-research-skill search-parallel "a" "b" "c" --sub-agents=6 --json
 ```
+
+**Sem chave OpenRouter o surf-ai continua funcionando** — não troque de
+ferramenta por causa disso. Ele cai para planejamento e síntese determinísticos,
+imprime `⚠ Degraded mode — no LLM synthesis` e **sai 0** com as evidências
+citadas. Isso é *degradado*, não *indisponível*: é o sinal 2 da seção acima, e a
+reação certa é rebaixar a confiança declarada no handoff, não abandonar o surf.
+A única chave cuja ausência para tudo é a do Brave — e ela sai 78, não 0.
 
 NÃO existe último recurso. A v8 é Brave-only: `WebSearch` / `WebFetch` do
 harness não são plano B, porque uma fonte que não passou pela CLI não entra no
@@ -132,12 +144,24 @@ Detalhes e o caminho de upgrade em `references/brave-api.md`.
 
 ## Variáveis de ambiente
 
+Estas são as variáveis que **o surf lê**. Cada uma foi conferida com
+`grep -rn` em `src/` + `bin/`.
+
 | Var | Efeito |
 |---|---|
-| `OPENROUTER_API_KEY` | Chave do LLM, usada só em memória, nunca gravada |
+| `BRAVE_API_KEY` / `BRAVE_API_KEYS` | Chave(s) Brave, alternativa a `~/.config/surf/keys.json`. Sem nenhuma delas, todo comando de pesquisa sai 78 |
+| `OPENROUTER_API_KEY` | Chave do LLM, usada só em memória, nunca gravada. Ausente = modo degradado (exit 0), não falha |
 | `SURF_AI_MODEL` | Sobrescreve o modelo primário |
 | `SURF_QUIET=1` | Silencia o progresso no stderr |
-| `CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS` | Teto de sub-agentes simultâneos (padrão 20) |
+| `SURF_AI_BUDGET_MS` | Orçamento de tempo do surf-ai em `normal` (mesmo efeito de `--budget-ms`; ignorado em `unlimit`) |
+| `SURF_CACHE_TTL` | TTL do cache de resultados |
+| `SURF_BRAVE_DEFAULT_RPS` | Requisições por segundo assumidas quando o plano da chave é desconhecido |
+| `SURF_RATE_LIMIT_COOLDOWN_MS` | Espera após um 429 antes de reusar a chave |
+| `BASH_DEFAULT_TIMEOUT_MS` | Lido do harness para dimensionar o orçamento do modo `normal` |
+
+Não existe `CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS` no surf — se o seu harness a
+tiver, é dele. O único teto de simultaneidade que o surf conhece é
+`--sub-agents` (padrão 10, máx 20).
 
 ## Símbolos do log de progresso (stderr)
 
@@ -149,7 +173,7 @@ Detalhes e o caminho de upgrade em `references/brave-api.md`.
 |---|---|---|
 | 0 | Resposta pronta (possivelmente degradada) | Segue, checando os três sinais acima |
 | 1 | No sources retrieved, or unclassified error (network failure, unexpected exception) | Escada completa em `burst-templates.md`, T3 regra 3 — ela é a única |
-| 2 | Erro de uso (flag inválida, verbo removido) | Corrige o comando |
+| 2 | Erro de uso (flag inválida, ou um dos verbos removidos na v8) | Corrige o comando **antes** de rodar de novo. Repetir o mesmo comando sai 2 de novo, sempre: um verbo removido não volta a existir na segunda tentativa |
 | **78** | **Não há chave Brave válida** | **PARE.** Não é falha de rede nem de rajada, e re-tentar não muda nada. Devolva a mensagem do portão verbatim e encerre a pesquisa. Nenhum outro sub-agente vai conseguir. |
 | 143 | O harness matou a chamada | Refaz com `surf-search-normal`, ou pede timeout maior |
 

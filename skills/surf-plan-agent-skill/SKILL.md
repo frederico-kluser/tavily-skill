@@ -4,8 +4,10 @@ description: >-
   Generates a research-grounded execution plan for a coding task. MUST BE USED
   whenever the user asks for a plan, design, architecture, or spec — including
   in plan/approval mode, BEFORE any plan is presented for approval. Reads the
-  project, runs MANDATORY web research (surf-search-normal / surf-ai via Bash;
-  falls back to WebSearch/WebFetch when Bash is blocked), interviews the user
+  project, runs MANDATORY web research (surf-search-normal / surf-ai via Bash —
+  Brave Search only, with no fallback provider underneath; the harness's
+  WebSearch/WebFetch is used ONLY when the harness itself denies Bash, never as
+  a substitute for a missing or burned Brave key), interviews the user
   with research-backed options, and only then delivers a plan with cited
   sources and a research ledger. For vague, high-stakes, or hard-to-reverse
   work — or when the user explicitly says "raise all my doubts first",
@@ -22,7 +24,7 @@ argument-hint: "[task to plan, e.g. 'add rate limiting to the Express API']"
 allowed-tools: Bash(surf-search-normal:*), Bash(surf-search-unlimit:*), Bash(surf-research-skill:*), Bash(surf-plan-skill:*), Read, Glob, Grep, Write, Edit, WebSearch, WebFetch, AskUserQuestion
 metadata:
   version: "8.0.0"
-  requires: "node>=18; surf-search-normal + surf-research-skill in PATH (npm i -g surf-agent-skill) for Layer A research; an OpenRouter key (surf-research-skill ai-setup) for surf-ai synthesis — without it Layer A degrades to raw hits; harness WebSearch/WebFetch as Layer B fallback; plan dir at ~/.claude/plans/ (or ./plans/ if it exists in the project)"
+  requires: "a VALID BRAVE SEARCH key FIRST (surf-research-skill setup — stored in ~/.config/surf/keys.json, or $BRAVE_API_KEY / $BRAVE_API_KEYS, or ./.env): without it EVERY research command exits 78 before it searches anything, and there is no second provider to fall through to; node>=18; surf-search-normal + surf-research-skill in PATH (npm i -g surf-agent-skill) for Layer A research; OPTIONALLY an OpenRouter key (surf-research-skill ai-setup) for surf-ai synthesis — without it Layer A still exits 0 in degraded mode, returning cited evidence with a deterministic plan instead of an LLM one; harness WebSearch/WebFetch as Layer B, for the single case where the harness denies Bash — never as a stand-in for the Brave key; plan dir at ~/.claude/plans/ (or ./plans/ if it exists in the project)"
 ---
 
 # surf-plan — research-grounded execution planning, two depths
@@ -71,6 +73,12 @@ whether they want an unresearched plan, and if they say yes, put
 **"NOT WEB-RESEARCHED"** at the top of the plan. That is the only path around
 Lock 1, and it is the user's call — never yours.
 
+A Brave key that exits 78 lands in exactly this paragraph and nowhere else:
+report the gate message, say the plan cannot be researched until the key is
+fixed, and let the user choose between fixing it and an explicitly labeled
+NOT WEB-RESEARCHED plan. What you may never do is answer the 78 by searching
+through some other tool and presenting the result as researched.
+
 While Lock 2 is closed (Deep mode), **only read / research / ask — do not
 Write or Edit project files.** The plan file itself is written after both
 locks open (in plan-approval mode, after the user's approval).
@@ -79,6 +87,14 @@ locks open (in plan-approval mode, after the user's approval).
 
 The skill has three research layers. Use the FIRST one that works;
 **a blocked layer is an instruction to fall back, never to skip.**
+
+**"Blocked" means the harness will not let you run the tool** — Bash denied,
+Bash absent, the binary not installed. It does **not** mean "the search ran and
+came back 78". A missing, invalid or burned Brave key is a **configuration
+failure**, and the answer to it is to stop and say so, never to search
+somewhere else: a source that did not come through the CLI has no ledger row,
+no citation number, and nothing in the plan can be audited against it. Exit 78
+is the one failure in this skill that has no fallback.
 
 - **Layer A — `surf-search-normal` (surf-ai) via Bash (preferred).**
   You brief it; the CLI plans the queries, fans up to `--sub-agents` of them
@@ -96,28 +112,49 @@ The skill has three research layers. Use the FIRST one that works;
   ```
 
   **Exit 78 means there is no valid Brave key.** That is a configuration
-  failure, not a research failure: stop, surface the message, and do not fall
-  through to another layer hoping for a different result.
+  failure, not a research failure: stop, surface the gate message verbatim, and
+  do not fall through to another layer hoping for a different result. Re-running
+  the command changes nothing, and neither does trying a different question, a
+  different sub-agent, or Layer B — the key is the problem, and only the user
+  can fix it (`surf-research-skill setup`). Report the plan as blocked on
+  configuration and stop; that is an honest delivery, not a failure to hide.
 
   For a genuinely open-ended unknown on a harness with no bash timeout (or a
   Bash call you gave a long timeout), use `surf-search-unlimit` instead.
 - **Layer A-manual — raw `surf-research-skill search` / `search-parallel`.**
   The right layer when you want the raw hits with no synthesis, or when you
   need Brave's own filters directly (`--domains`, `--time`, `--goggles`).
-  Note that `extract`, `crawl`, `map` and the async research verbs were removed
-  in v8: Brave's `/web/search` returns ranked links and snippets, never page
-  content. If you need a page's text, fetch the URL yourself.
+  Note that `extract`, `crawl`, `map`, `research`, `research-start`,
+  `research-poll` and `usage` were removed in v8 and exit 2 if called: Brave's
+  `/web/search` returns ranked links and snippets, never page content. If you
+  need a page's full text, read the URL yourself — that is reading a source the
+  CLI already found and ledgered, which is allowed, and it is a different act
+  from using a non-Brave tool to *find* sources, which is not.
 - **Layer B — harness-native `WebSearch` / `WebFetch` tools.**
-  Use when Bash is unavailable, denied, or blocked by the current mode
-  (plan/approval modes commonly block Bash but allow WebSearch — that is NOT
-  an excuse to skip research; it is exactly why this layer exists). Run the
-  same queries, one `WebSearch` call per query (multiple in one turn run
-  concurrently), and use `WebFetch` to pull the 1-2 most load-bearing pages.
+  **One trigger only: you cannot run Bash at all** — it is unavailable, denied,
+  or blocked by the current mode (plan/approval modes commonly block Bash but
+  allow WebSearch — that is NOT an excuse to skip research; it is exactly why
+  this layer exists). Run the same queries, one `WebSearch` call per query
+  (multiple in one turn run concurrently), and use `WebFetch` to pull the 1-2
+  most load-bearing pages. Mark every Layer B row in the ledger as `B`, so the
+  reader can see which citations never passed through the CLI.
+  **Layer B is not a fallback for a failed Brave search.** If Bash works and the
+  CLI answered 78, you are not in Layer B — you are stopped.
 - **Layer C — nothing available.** Halt per THE GATE's last paragraph.
 
-Record the active layer in the ledger. If a Layer A call fails mid-flow (key
-burned, timeout, permission denied), switch to Layer B for the remaining
-calls — do not abandon research.
+Record the active layer in the ledger. If a Layer A call fails mid-flow, the
+response depends on *which* failure it is — they are not interchangeable:
+
+| Failure | What it means | What you do |
+|---|---|---|
+| **Exit 78** | No valid Brave key (missing, invalid, burned, or cooling) | **STOP.** Surface the message verbatim. No retry, no Layer B, no other question. |
+| Exit 2 | Usage error — bad flag, or a verb v8 removed | Fix the command and re-run. Retrying it unchanged cannot work. |
+| Exit 1 | The search ran and retrieved nothing, or an unclassified error | Re-run **once** with a reworded or narrower query. Still nothing → record the doubt as unresolved in the ledger. |
+| Exit 143 | The harness killed the call on timeout | Re-run with `surf-search-normal` (not `unlimit`), or ask for a longer Bash timeout. |
+| Bash itself denied | The harness will not run commands | Layer B for the remaining calls. |
+
+Only that last row leads to Layer B. Never abandon research silently — but
+never launder a configuration failure into a search from somewhere else either.
 
 ## Delegated research (subagent/swarm)
 
@@ -151,12 +188,14 @@ an option, never a requirement.
    `--sub-agents=max(1, floor(10 / <wave size>))` so the two levels add instead
    of multiplying.
 
-### Fallback
+### Without a subagent tool
 
-No subagent tool available? Run the research inline via Layer A or B as the
-current Phases 3/4D/5/5D/6 already prescribe — the gate, ledger, Register,
-and lock rules apply exactly as they do today. Delegated mode adds throughput
-without removing the existing path.
+No subagent tool available? Run the research inline on the layer Phase 0
+resolved, as the current Phases 3/4D/5/5D/6 already prescribe — the gate,
+ledger, Register, and lock rules apply exactly as they do today. Delegated mode
+adds throughput without removing the existing path. It changes nothing about
+exit 78: a sub-agent that hits the gate reports it and the whole burst stops,
+because every other sub-agent is about to hit the same key.
 
 ## Plan-approval modes (Claude Code plan mode and similar)
 
@@ -220,8 +259,13 @@ Try Layer A:
 ```bash
 surf-research-skill --version
 ```
-- Exit 0 → **Layer A active.** (If a later call reveals no keys, treat it as
-  a Layer A failure and fall back to B.)
+- Exit 0 → **the binary is installed, so Layer A is the layer.** Note what this
+  does *not* prove: `--version` never touches the key gate, so it exits 0 with
+  no Brave key at all. The key is proved by the first real research call — and
+  if that call exits 78, the answer is to stop (see the failure table above),
+  **not** to fall back to Layer B. To settle it before you have written a single
+  query, run `surf-research-skill gate`, which validates the key for free and
+  exits 78 when there isn't one.
 - Command not found / Bash unavailable / Bash denied → check for harness
   `WebSearch`/`WebFetch` tools → **Layer B active.**
 - Neither → **Layer C**: tell the user:
@@ -304,9 +348,9 @@ surf-research-skill search \
   "<task topic> security or production checklist 2026" \
   --max 3 --quiet
 ```
-Layer B — the same 3 queries as 3 `WebSearch` calls (they can run in
-parallel), then `WebFetch` the 1–2 most relevant hits if the snippets are
-thin.
+Layer B — **only if Phase 0 resolved to B** (Bash unavailable): the same 3
+queries as 3 `WebSearch` calls (they can run in parallel), then `WebFetch` the
+1–2 most relevant hits if the snippets are thin.
 
 Distill: **3 dominant approaches** in the wild (one sentence each), **2–3
 common mistakes** to avoid, **1–2 security/performance gotchas**. Add one
@@ -413,13 +457,13 @@ On a no-limit harness (Pi core) or with a long Bash timeout, use
 
 Layer A-manual — when you want the raw hits for a hand-built queries file:
 ```bash
-# Pi core (no limit): add --no-budget. Time-limited harness: drop it, lower --concurrency.
+# Pi core (no limit): add --no-budget. Time-limited harness: drop it, lower --sub-agents.
 surf-research-skill search-parallel --queries-file /tmp/plan-queries.json \
-  --concurrency 8 --no-budget --json > /tmp/plan-research.json
+  --sub-agents=8 --no-budget --json > /tmp/plan-research.json
 ```
-(Layer B: emit the same queries as WebSearch calls in one turn; WebFetch the
-load-bearing pages.) Every option you later present must trace to a ledger
-row. **Never invent options.**
+(Layer B, only if Phase 0 resolved to B: emit the same queries as WebSearch
+calls in one turn; WebFetch the load-bearing pages.) Every option you later
+present must trace to a ledger row. **Never invent options.**
 
 ### Phase 5D — CLARIFY (→ asked questions + answers)
 
@@ -614,9 +658,12 @@ After writing the file, announce:
 1. **THE GATE is non-negotiable.** No research receipts → no plan, in any
    mode, through any tool. Deep mode adds: no complete Ambiguity Register →
    no plan either.
-2. **A blocked tool means fall back, not skip.** Bash denied → Layer B.
-   Layer A key burned → Layer B. Only Layer C (nothing available) may halt
-   research, and then the user decides.
+2. **A blocked tool means fall back, not skip — a broken key means stop.**
+   Bash denied → Layer B. **Exit 78 (no valid Brave key) → STOP**, surface the
+   message, and let the user fix the key or authorize a NOT WEB-RESEARCHED
+   plan. Never answer a 78 with WebSearch, WebFetch, or any other search path:
+   the v8 guarantee is that every citation in the plan came through the CLI's
+   ledger, and one uncited hit forfeits it for the whole plan.
 3. **The Mode Decision is explicit and stated**, not silent — say Normal or
    Deep and why, every time.
 4. **Baseline/grounding research happens even for "simple" tasks.** 10 s of
@@ -645,6 +692,15 @@ After writing the file, announce:
   implementation" — that inverts the entire skill.
 - Treating a denied/blocked Bash call as permission to skip research — it is
   the signal to switch to Layer B.
+- Treating an **exit 78** as permission to switch to Layer B — it is the signal
+  to STOP. The plan that comes back with WebSearch citations after a burned key
+  looks exactly like a researched plan and is not one; that is the precise
+  failure v8 removed the fallback providers to make impossible.
+- Retrying a command that cannot succeed on a retry: re-running after a 78 (the
+  key is still broken), or re-running a removed verb after an exit 2 (`extract`,
+  `crawl`, `map`, `research`, `research-start`, `research-poll`, `usage` are
+  gone — they exit 2 every time). Each retry costs time and, if it reaches the
+  network, quota.
 - Running Deep mode's full ambiguity sweep on a routine 1-file plan (wastes
   the user's time) — or running Normal mode on a high-stakes, genuinely
   vague request (ships an assumption that turns out wrong).
@@ -673,6 +729,9 @@ surf-plan-skill new "<task>"         # create empty skeleton + print path
 surf-plan-skill doctor               # verify surf-research-skill installed + key count
 surf-plan-skill --version
 surf-plan-skill --help
+
+# Key gate — free, and the only check that actually proves the Brave key
+surf-research-skill gate             # exit 0 = key valid · exit 78 = STOP, no research is possible
 
 # Research — Layer A (surf-ai: it plans the queries, you write the brief)
 surf-search-normal "<question>" --task "planning X" --goal "…" --insights "…" --deliverable "…"
