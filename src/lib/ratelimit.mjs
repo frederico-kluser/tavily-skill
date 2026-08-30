@@ -54,6 +54,43 @@ const LOCK_STALE_MS = Number(process.env.SURF_BRAVE_LOCK_STALE_MS) || 30_000;
 // ledger without limit.
 const MAX_RECENT = 4096;
 
+// THE MONTHLY QUOTA IS NOT A BACKOFF.
+//
+// Brave's two buckets fail differently. The per-second bucket refills in a
+// second, so "wait and retry" is the right answer. The monthly bucket refills
+// once a month, and NOTHING this process can wait for will bring it back —
+// retrying is guaranteed to fail, and on this account the second key is the one
+// that still has quota, so time spent sleeping on the empty key is time stolen
+// from the key that works.
+//
+// So the two facts are carried on two different channels:
+//
+//   resetDelayMs()  — the SLEEP channel. Its only consumer is dispatch.mjs:298
+//                     (`await sleep(e.retryAfterMs)`), which sleeps the raw
+//                     number, twice, INSIDE the retry loop and OUTSIDE the
+//                     harness-budget guard (that guard runs once per key, before
+//                     the attempts). The default budget for an unrecognised
+//                     harness is 30s. Handing that channel the real monthly
+//                     reset — 183945s, observed — would not sideline the key, it
+//                     would freeze surf for two days. So it stays CLAMPED.
+//
+//   the ledger      — the EXPIRY channel. `quotaResetAt` is an absolute instant
+//                     that survives the process and expires by itself, which is
+//                     what "this key is done until the month turns over"
+//                     actually means.
+//
+// Ceiling for the sleep channel on a quota 429. Deliberately the same 5s that
+// the per-second path already allows, so recognising a quota 429 adds no new
+// worst case to a budget that is only 30s by default — it merely stops a
+// month-long outage being answered with the 1-second bucket's reset.
+const QUOTA_BACKOFF_MS = Number(process.env.SURF_BRAVE_QUOTA_BACKOFF_MS) || 5_000;
+// The per-second path's own ceiling, unchanged.
+const RATE_BACKOFF_MS = 5_000;
+// Longest a key may be held as quota-exhausted. The observed monthly window is
+// 31 days (`w=2678400`); a header or a stepped clock claiming more than that
+// does not buy a longer hold, because the hold has to expire on its own.
+const MAX_QUOTA_HOLD_MS = 2_678_400 * 1000;
+
 // Who holds the lockfile. host:pid, so a HOME shared over NFS cannot mistake a
 // remote pid for a local one.
 const LOCK_OWNER = `${hostname()}:${process.pid}`;
@@ -284,6 +321,14 @@ function resolveRps(bucket) {
  *
  * `x-ratelimit-policy: "1;w=1, 2000;w=2678400"` — we want the w=1 bucket.
  * Note 422 responses carry NO rate-limit headers, so absence is normal.
+ *
+ * ABSENCE IS NOT ZERO. A 200 carries the policy but does not always carry
+ * `x-ratelimit-remaining`, and this function used to write the parse of that
+ * missing header — null — straight over the monthly counter. One ordinary 200
+ * therefore erased the exact figure a 429 body had just taught us, which on an
+ * account with ~117 searches left for the month is the difference between
+ * knowing what is left and flying blind. The counter is only overwritten by a
+ * response that actually reported one.
  */
 export async function learnFromHeaders(key, headers) {
   if (DISABLED || !headers) return null;
@@ -302,7 +347,10 @@ export async function learnFromHeaders(key, headers) {
       ...b,
       rps: perSecond,
       at: new Date().toISOString(),
-      monthlyRemaining: parseMonthlyRemaining(remaining),
+      // `?? b.monthlyRemaining`: a response that reported nothing teaches
+      // nothing. A response that reported a number — including 0 — still wins.
+      monthlyRemaining: parseMonthlyRemaining(remaining) ?? b.monthlyRemaining,
+      quotaResetAt: nextQuotaResetAt(b, strictMonthlyRemaining(remaining), getHeader(headers, 'x-ratelimit-reset')),
     };
     if (lock) await writeLedger(led);
   } catch {
@@ -331,12 +379,18 @@ export async function learnFromBody(key, body) {
     const b = led[id] || {};
     const used = Number(meta.quota_current);
     const cap = Number(meta.quota_limit);
+    const left = Number.isFinite(used) && Number.isFinite(cap) ? cap - used : null;
     led[id] = {
       ...b,
       rps,
       at: new Date().toISOString(),
       plan: typeof meta.plan === 'string' ? meta.plan : b.plan,
-      monthlyRemaining: Number.isFinite(used) && Number.isFinite(cap) ? cap - used : b.monthlyRemaining,
+      monthlyRemaining: left ?? b.monthlyRemaining,
+      // The body names the counters but never says WHEN the month turns over,
+      // so it can lift an exhaustion mark (quota is back) but never invent one.
+      // It does not need to: brave.mjs learns from the same 429's headers first,
+      // and those carry x-ratelimit-reset.
+      quotaResetAt: nextQuotaResetAt(b, left, null),
     };
     if (lock) await writeLedger(led);
   } catch {
@@ -374,15 +428,93 @@ export async function knownRps(key) {
  * Effective simultaneity across all supplied keys. This is what the fan-out
  * planner uses to tell the user that `--sub-agents 10` cannot actually run ten
  * requests at once on a 1 rps plan.
+ *
+ * Counted per BUCKET, not per entry. The ledger has always been indexed by a
+ * hash of the token, so one key listed twice — the same string in keys.json and
+ * in BRAVE_API_KEY, the commonest way a ring is built — is ONE budget. Summing
+ * the list instead advertised double: the planner then promised two simultaneous
+ * sub-agents against a 1 rps allowance and collected a 429 for the second.
+ *
+ * A key whose monthly quota is spent contributes nothing, because it can serve
+ * nothing until the month turns over. That is a fact with an expiry date, not a
+ * verdict: see nextQuotaResetAt().
  */
 export async function effectiveParallelism(keys) {
   if (DISABLED) return Infinity;
   const list = (Array.isArray(keys) ? keys : [keys]).filter(Boolean);
   if (!list.length) return DEFAULT_RPS;
   const led = await readLedger();
+  const now = Date.now();
   let total = 0;
-  for (const k of list) total += resolveRps(led[bucketId(k)]);
+  for (const id of new Set(list.map(bucketId))) {
+    if (quotaExhausted(led[id], now)) continue;
+    total += resolveRps(led[id]);
+  }
   return Math.max(1, total);
+}
+
+/**
+ * Is this bucket's monthly quota spent RIGHT NOW?
+ *
+ * The whole mechanism is one absolute instant on disk, and that is the point.
+ * A boolean "exhausted" flag would need someone to come back and clear it; an
+ * instant clears itself the moment it passes — no next run, no operator, no
+ * file to delete. It is the same discipline that stopped a 429 from calling
+ * markBurned (which never expires): a transient signal may buy a pause, never
+ * an irreversible decision.
+ */
+function quotaExhausted(bucket, now = Date.now()) {
+  if (!bucket) return false;
+  const until = Date.parse(bucket.quotaResetAt || '');
+  if (!Number.isFinite(until)) return false;
+  // A hold reaching further out than one monthly window describes a clock that
+  // moved, not a quota Brave reported, and it must not outlive the window it
+  // claims. One-sided on purpose, exactly like windowTimestamps().
+  if (until - now > MAX_QUOTA_HOLD_MS) return false;
+  return until > now;
+}
+
+/**
+ * The `quotaResetAt` to store, given what this response reported.
+ *
+ * Three states, and the difference between them is the whole fix:
+ *   left == null → the response said nothing about the month; keep what we knew.
+ *   left  >  0   → quota is back; the mark is dropped and the key is live again.
+ *   left <=  0   → the month is gone; hold the key until Brave's stated reset.
+ */
+function nextQuotaResetAt(bucket, left, resetHeader) {
+  const prev = (bucket && bucket.quotaResetAt) || undefined;
+  if (left == null) return prev;
+  if (left > 0) return undefined;
+  return parseQuotaResetAt(resetHeader) || prev;
+}
+
+/** "1, 183945" → the ISO instant the MONTHLY window resets, clamped to a month. */
+function parseQuotaResetAt(reset) {
+  if (typeof reset !== 'string') return null;
+  const parts = reset.split(',');
+  if (parts.length < 2) return null;
+  const raw = parts[1].trim();
+  if (!/^\d+$/.test(raw)) return null;
+  const secs = Number(raw);
+  if (!(secs > 0)) return null;
+  return new Date(Date.now() + Math.min(secs * 1000, MAX_QUOTA_HOLD_MS)).toISOString();
+}
+
+/**
+ * The monthly field of `x-ratelimit-remaining`, parsed STRICTLY.
+ *
+ * parseMonthlyRemaining() is lenient — it trusts Number(""), so "1, " reads as
+ * 0. That is tolerable for a display counter and intolerable here, because this
+ * is the value that decides whether a key gets stood down for a month. A field
+ * that is not plainly an integer is "unknown", never "your month is gone".
+ */
+function strictMonthlyRemaining(remaining) {
+  if (typeof remaining !== 'string') return null;
+  const parts = remaining.split(',');
+  if (parts.length < 2) return null;
+  const raw = parts[1].trim();
+  return /^-?\d+$/.test(raw) ? Number(raw) : null;
 }
 
 function getHeader(headers, name) {
@@ -421,15 +553,46 @@ export function parseMonthlyRemaining(remaining) {
 }
 
 /**
- * Seconds to wait after a 429. Brave sends no Retry-After; the only signal is
- * x-ratelimit-reset ("1, 183945" — seconds until each window resets).
+ * Milliseconds to wait after a 429. Brave sends no Retry-After; the only signal
+ * is x-ratelimit-reset ("1, 183945" — seconds until each window resets).
+ *
+ * WHICH WINDOW ACTUALLY RAN OUT decides which field to read. The companion
+ * header says so outright:
+ *
+ *   x-ratelimit-remaining: 0, 118   the second is spent, the month is fine
+ *                                   → field 1 ("1"): wait a second, retry, win.
+ *   x-ratelimit-remaining: 0, 0     the MONTH is spent
+ *                                   → field 1 is a lie of omission. That window
+ *                                     really does reopen in one second, and it
+ *                                     reopens onto an empty quota, so the key
+ *                                     left the backoff after ~600ms and went
+ *                                     back to collecting 429s for the rest of
+ *                                     the month. Field 2 is the honest number.
+ *
+ * Reading field 2 is not the same as SLEEPING field 2, and the difference is
+ * deliberate: see QUOTA_BACKOFF_MS. 183945s handed to `await sleep()` is not a
+ * cooldown, it is a two-day hang, and on this account it would also strand the
+ * second key — the one that still has quota — behind the dead one. The month is
+ * therefore remembered in the ledger (quotaResetAt), where it costs nobody any
+ * wall-clock time, and only a bounded, jittered wait is handed to the caller.
  */
 export function resetDelayMs(headers) {
   const reset = getHeader(headers, 'x-ratelimit-reset');
   if (typeof reset !== 'string') return null;
   const first = Number(reset.split(',')[0].trim());
   if (!Number.isFinite(first) || first < 0) return null;
+  const left = strictMonthlyRemaining(getHeader(headers, 'x-ratelimit-remaining'));
+  const monthGone = left != null && left <= 0;
+  const seconds = monthGone ? monthlyResetSeconds(reset, first) : first;
   // Half fixed, half jitter — synchronized retries are what caused the 429.
-  const base = Math.min(first, 5) * 1000;
+  const base = Math.min(seconds * 1000, monthGone ? QUOTA_BACKOFF_MS : RATE_BACKOFF_MS);
   return Math.round(base / 2 + Math.random() * (base / 2)) || 250;
+}
+
+/** Field 2 of "1, 183945" — seconds to the monthly reset; field 1 if absent. */
+function monthlyResetSeconds(reset, fallback) {
+  const parts = reset.split(',');
+  if (parts.length < 2) return fallback;
+  const raw = parts[1].trim();
+  return /^\d+$/.test(raw) ? Number(raw) : fallback;
 }
