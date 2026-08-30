@@ -62,7 +62,16 @@ export function canonicalUrl(raw) {
     // times it had already been through here, and could be indexed twice.
     // The documented gap (a trailing slash before a query string is NOT
     // normalised) survives: `s` does not end with `/` in that case.
-    if (u.pathname !== '/') s = s.replace(/\/+$/, '');
+    if (u.pathname !== '/') {
+      const hadTrailing = /\/$/.test(s);
+      s = s.replace(/\/+$/, '');
+      // Root with redundant slashes (https://a.com//) strips down to an empty
+      // path; give the root back its canonical slash — the pinned form
+      // canonicalUrl('https://a.com') already serialises to. Only when the
+      // string itself ended in '/', so a trailing slash before a query string
+      // (https://a.com//?q=1) is still left untouched (documented gap).
+      if (hadTrailing && u.pathname.replace(/\/+$/, '') === '') return s + '/';
+    }
     return s;
   } catch {
     return raw.trim();
