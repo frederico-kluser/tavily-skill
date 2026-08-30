@@ -8,6 +8,7 @@ import { resolvePlansDir, DEFAULT_HOME_PLANS } from '../src/plan/plans-dir.mjs';
 import { listPlans, readPlan, newPlanStub } from '../src/plan/plan-file.mjs';
 import { slugify } from '../src/plan/slug.mjs';
 import { checkSurfSkill } from '../src/lib/check-surf-skill.mjs';
+import { harnessDirs } from '../src/lib/harness-install.mjs';
 import { formatGate, EXIT_CONFIG } from '../src/lib/preflight.mjs';
 // Single source of the version number: src/lib/version.mjs reads package.json.
 import { VERSION } from '../src/lib/version.mjs';
@@ -173,17 +174,21 @@ async function cmdDoctor() {
   } else {
     out(`\nsurf-research-skill: ✗ NOT installed`);
     out(`  ${surf.error || 'command not found'}`);
-    out(`  → Install: npm i -g surf-agent-skill && surf-research-skill setup`);
+    // One voice about the key gate only: formatGate() (printed below, when the
+    // CLI IS installed and the keys are unusable). Advising `setup` here is a
+    // second opinion about a gate this branch cannot even reach — the install
+    // hint names the package, the gate text names the remedy.
+    out(`  → Install: npm i -g surf-agent-skill`);
     process.exitCode = 1;
   }
 
   // Quick sanity check that the SKILL.md is reachable in at least one
-  // harness dir.
-  const home = process.env.HOME || '';
-  const checkDirs = [
-    `${home}/.claude/skills/surf-plan-agent-skill/SKILL.md`,
-    `${home}/.agents/skills/surf-plan-agent-skill/SKILL.md`,
-  ];
+  // harness dir. Same home resolution as the installer: harnessDirs() re-reads
+  // os.homedir() on every call, so the doctor and the installer cannot
+  // disagree about where the links live (the doctor used to read $HOME and
+  // the installer os.homedir(); under sudo/containers the two diverge and a
+  // healthy install was reported broken).
+  const checkDirs = harnessDirs().map(dir => path.join(dir, 'surf-plan-agent-skill', 'SKILL.md'));
   let foundSkill = false;
   for (const p of checkDirs) {
     try {
@@ -194,7 +199,7 @@ async function cmdDoctor() {
     } catch {}
   }
   if (!foundSkill) {
-    out(`\nSKILL.md:        ⚠ not found in ~/.claude/skills/ or ~/.agents/skills/`);
+    out(`\nSKILL.md:        ⚠ not found in any harness skills dir`);
     out(`  → reinstall: npm i -g surf-agent-skill`);
     process.exitCode = process.exitCode || 1;
   }

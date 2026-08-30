@@ -10,8 +10,10 @@
 //     and leaves user copies alone.
 //
 // Safety rule that governs this whole file: we only ever DELETE a path we can
-// prove we created. Every link we create is an absolute symlink; anything
-// relative, or pointing anywhere but at our package, belongs to the user.
+// prove we created. The proof is the stored target resolved THE WAY THE KERNEL
+// RESOLVES IT — an absolute target as itself, a relative one against the
+// directory the link lives in, never against process.cwd(). Whatever that
+// resolution lands on outside our package belongs to the user and survives.
 // That rule binds BOTH deleting entry points — uninstallSkill()/unlinkIfOurs()
 // AND cleanupLegacy(). A name alone is never proof of ownership.
 
@@ -39,12 +41,26 @@ const OUR_PACKAGE_NAMES = ['surf-agent-skill', 'surf-skill'];
 
 // Harness skill directories (per published docs as of 2026-05).
 // Order: canonical first, then per-harness.
-export const HARNESS_DIRS = [
-  path.join(home, '.agents', 'skills'),       // OpenCode + GH Copilot CLI canonical
-  path.join(home, '.claude', 'skills'),       // Claude Code
-  path.join(home, '.codex', 'skills'),        // OpenAI Codex CLI
-  path.join(home, '.pi', 'agent', 'skills'),  // Pi Coding Agent
+const HARNESS_DIR_SUFFIXES = [
+  path.join('.agents', 'skills'),       // OpenCode + GH Copilot CLI canonical
+  path.join('.claude', 'skills'),       // Claude Code
+  path.join('.codex', 'skills'),        // OpenAI Codex CLI
+  path.join('.pi', 'agent', 'skills'),  // Pi Coding Agent
 ];
+
+// Boot-time snapshot of the harness dirs. Exported — five modules import the
+// binding — so its shape is frozen: it is computed from the home of the FIRST
+// import, which is the home the lifecycle scripts run with. A process that
+// adjusts HOME late (container, partial `sudo -E`, a harness that sets HOME
+// after start) must read harnessDirs() instead, never this constant.
+export const HARNESS_DIRS = HARNESS_DIR_SUFFIXES.map(s => path.join(home, s));
+
+// Fresh form of HARNESS_DIRS: recomputes os.homedir() on every call. Every
+// sweep in THIS file runs through it, so an install started after a late HOME
+// change writes and uninstalls into the same home the process now lives in.
+export function harnessDirs() {
+  return HARNESS_DIR_SUFFIXES.map(s => path.join(os.homedir(), s));
+}
 
 // Legacy skill names whose stale symlinks are removed on upgrade so they don't
 // shadow the current ones — but ONLY the ones we can prove we created (see
@@ -86,13 +102,14 @@ function linkTarget(link, stored) {
 // Answers "what does this link provably point AT, if we made it?" and returns
 // null the moment it cannot answer:
 //   - not a symlink at all (a user's real dir or copy) — never ours;
-//   - a RELATIVE stored target — symlinkOrCopy() is only ever called with an
-//     absolute target, so by construction a relative link is not ours. This is
-//     also the guard that makes the answer independent of process.cwd(): npm
-//     parks lifecycle scripts in an unrelated directory, and a relative target
-//     resolved against THAT is how a user's own link got deleted before;
 //   - unreadable.
-// Otherwise the target is resolved the way the kernel resolves it (linkTarget).
+// Otherwise the target is resolved THE WAY THE KERNEL RESOLVES IT (linkTarget):
+// an absolute stored target as itself, a relative one against the directory
+// the LINK lives in — never against process.cwd(), which is the resolution
+// that let a user's own link get deleted before (npm parks lifecycle scripts
+// in an unrelated directory). The relative case is judged exactly like the
+// absolute one: if the kernel-ian target lands inside the caller's scope, the
+// link is ours; if it lands anywhere else, no amount of cwd magic makes it so.
 // Callers decide the SCOPE the target has to fall in; nobody re-derives the
 // proof itself.
 async function provenLinkTarget(link) {
@@ -101,7 +118,7 @@ async function provenLinkTarget(link) {
   if (!stat.isSymbolicLink()) return null;
   let stored;
   try { stored = await fs.readlink(link); } catch { return null; }
-  if (stored === null || !path.isAbsolute(stored)) return null;
+  if (stored === null) return null;
   return linkTarget(link, stored);
 }
 
@@ -179,20 +196,20 @@ export async function symlinkOrCopy(target, link) {
 
 // Remove `link` ONLY if we can prove we created it. Returns true iff removed.
 //
-// The old test was `path.resolve(cur) === path.resolve(expectedTarget)`, and
-// path.resolve() resolves a relative stored target against process.cwd() — not
-// against dirname(link), which is how the kernel resolves it. From the wrong
-// cwd, `surf-research-agent-skill -> their-notes` (the USER's own directory,
-// living beside the link) resolved onto our package path and got DELETED by an
-// uninstall. Two guards close that hole:
-//   1. the stored target must be ABSOLUTE — symlinkOrCopy is only ever called
-//      with an absolute target, so every link we create is absolute and a
-//      relative one is, by construction, not ours;
-//   2. it must resolve (via linkTarget, dirname-based) exactly onto the
-//      package path we were asked about.
+// The proof is provenLinkTarget() — the stored target resolved the way the
+// kernel resolves it (absolute as itself, relative against dirname(link)),
+// compared EXACTLY against the expected target. Nothing in the proof touches
+// process.cwd(), so a hostile npm cwd can neither make a user's own link
+// resolve onto our package path nor stop OUR link from being recognised.
+//
+// Deliberately NOT gated on the target still existing: lstat (inside
+// provenLinkTarget) answers for a DANGLING link too — `npm rm -g` after the
+// package directory is already gone must still remove the dead link we left,
+// not abandon it forever (that is what existsSync() used to do: it FOLLOWS
+// the link, so a broken one answered "not there" and the sweep skipped it).
+//
 // Anything we cannot prove is ours is left untouched.
 export async function unlinkIfOurs(link, expectedTarget) {
-  if (!existsSync(link)) return false;
   try {
     // Scope: EXACT. This name is one we install right now, so we know the one
     // path it may point at.
@@ -236,7 +253,7 @@ export const SKILLS = [
 
 export async function installSkill(pkgRoot) {
   const results = [];
-  for (const dir of HARNESS_DIRS) {
+  for (const dir of harnessDirs()) {
     // A harness dir we cannot create or write to is a DIRECTORY-level failure:
     // report it once and move on to the next harness. It must never cost the
     // other harnesses, and it must not be reported once per skill.
@@ -266,7 +283,7 @@ export async function installSkill(pkgRoot) {
 
 export async function uninstallSkill(pkgRoot) {
   const results = [];
-  for (const dir of HARNESS_DIRS) {
+  for (const dir of harnessDirs()) {
     for (const s of SKILLS) {
       const expectedTarget = s.subdir ? path.join(pkgRoot, s.subdir) : pkgRoot;
       const link = path.join(dir, s.name);
@@ -275,6 +292,25 @@ export async function uninstallSkill(pkgRoot) {
         results.push({ dir: link, skill: s.name, removed });
       } catch (e) {
         results.push({ dir: link, skill: s.name, removed: false, error: e.message });
+      }
+    }
+    // LEGACY_NAMES too, scoped to THIS install: an uninstall that leaves
+    // `surf-free-agent-skill` behind keeps advertising a keyless search binary
+    // v8 deleted. Same ownership proof as cleanupLegacy() — provenLinkTarget
+    // plus a scope — but the scope is the pkgRoot being uninstalled, which is
+    // what makes the sweep safe to run from the library: a legacy link
+    // pointing into ANOTHER install is that other install's business.
+    for (const name of LEGACY_NAMES) {
+      const link = path.join(dir, name);
+      try {
+        const target = await provenLinkTarget(link);
+        const ours = target !== null &&
+                     (isInside(pkgRoot, target) || insideOurInstall(target));
+        if (!ours) continue;
+        await fs.unlink(link);
+        results.push({ dir: link, skill: name, removed: true });
+      } catch {
+        // One hostile name must not abort the rest of the sweep.
       }
     }
   }
@@ -311,7 +347,7 @@ export async function cleanupLegacy() {
   // Non-enumerable so `for (const r of results)` in postinstall/preuninstall
   // still sees removals only — the array's contract is unchanged.
   Object.defineProperty(results, 'kept', { value: kept, enumerable: false });
-  for (const dir of HARNESS_DIRS) {
+  for (const dir of harnessDirs()) {
     for (const name of LEGACY_NAMES) {
       const link = path.join(dir, name);
       // Use lstat (not existsSync) so we also catch broken symlinks pointing

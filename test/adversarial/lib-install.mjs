@@ -142,8 +142,10 @@ function box(label) {
 function fakePkg(dir, name = 'pkg') {
   const p = path.join(dir, name);
   mkdirSync(path.join(p, 'skills', 'surf-plan-agent-skill'), { recursive: true });
+  mkdirSync(path.join(p, 'skills', 'surf-search-agent-skill'), { recursive: true });
   writeFileSync(path.join(p, 'SKILL.md'), '# root skill\n');
   writeFileSync(path.join(p, 'skills', 'surf-plan-agent-skill', 'SKILL.md'), '# plan skill\n');
+  writeFileSync(path.join(p, 'skills', 'surf-search-agent-skill', 'SKILL.md'), '# search skill\n');
   return p;
 }
 function clearKeyEnv() {
@@ -671,11 +673,15 @@ section('harness-install: install / uninstall round trip');
     ok(`${path.basename(path.dirname(dir))}: plan skill linked`,
       readlinkSync(path.join(dir, 'surf-plan-agent-skill')) === path.join(pkg, 'skills', 'surf-plan-agent-skill'));
   }
-  // A user file wearing our name must survive an uninstall.
+  // 3 skills x 4 dirs = 12 links; the user-copy squat on dir[1] is the one
+  // that must survive, so a complete uninstall removes 11. (The fixture now
+  // creates skills/surf-search-agent-skill/ — before, the 4 links to that
+  // skill were DANGLING and unlinkIfOurs refused to touch them, and the count
+  // happened to be 7 because two defects cancelled out.)
   const squat = path.join(hi.HARNESS_DIRS[1], 'surf-research-agent-skill');
   rmSync(squat); writeFileSync(squat, 'USER COPY');
   const un = await hi.uninstallSkill(pkg);
-  eq('seven of our eight links are removed', un.filter(r => r.removed).length, 7);
+  eq('eleven of our twelve links are removed', un.filter(r => r.removed).length, 11);
   eq('the user copy is left alone', readFileSync(squat, 'utf8'), 'USER COPY');
   rmSync(squat);
   for (const dir of hi.HARNESS_DIRS) rmSync(dir, { recursive: true, force: true });
