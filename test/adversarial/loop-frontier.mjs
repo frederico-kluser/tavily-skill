@@ -192,6 +192,12 @@ section('frontier/admit: rejection POISONS the key for every future reason');
 
   const f3 = new Frontier();
   const q3 = 'grpc streaming backpressure limits';
+  // sq1 must be a REAL branch for this scenario to exist at all. Closing an id
+  // the frontier never saw is no longer a bar (BUG-06), so without this seed the
+  // first admit below SUCCEEDS and the second is refused as the plain duplicate
+  // it is — which would report this defect as back when the cross-branch
+  // contamination it names is gone. The assertion itself is untouched.
+  f3.admit(makeNode({ q: 'grpc keepalive tuning basics', sub: 'sq1' }));
   f3.closeBranch('sq1');
   f3.admit(makeNode({ q: q3, sub: 'sq1' }));            // refused: branch closed
   const other = f3.admit(makeNode({ q: q3, sub: 'sq2' })); // a DIFFERENT branch
@@ -828,7 +834,21 @@ section('orchestrator: malformed analyst replies (unlimit)');
   });
   reset([orChat(PLAN_1Q), orChat(ANALYSIS_GHOST_BRANCH), orChat('# A\nx [1].')]);
   const r = await run({ question: 'ghost branch' }, { mode: 'unlimit', maxRounds: 4, flags: NOCACHE }, 'ghost branch');
-  ok('closing a branch that does not exist yet still blocks its future queries (consistent with BUG-06)',
+  // Converted from ok() to bug(): "same defect, second entry point". This line
+  // asserted, as CORRECT behaviour, the exact half of BUG-06 that is wrong, and
+  // it is logically incompatible with BUG-06 above. The two scenarios are the
+  // SAME operation — closeBranch(a sub that never existed) followed by admit(a
+  // node for that sub), with no wave boundary between them: orchestrator.mjs:411
+  // closes and orchestrator.mjs:443 admits inside ONE analysis, so there is no
+  // popWave in between here either. BUG-06 requires that admit to PASS; this
+  // line required it to FAIL. No implementation satisfies both.
+  // What is wrong is NOT that the analyst closed a branch and proposed a query
+  // for it in the same wave — refusing that would be defensible. It is the
+  // PERMANENCE of a close that was never earned: the id went into the blacklist
+  // before a single node was inspected, so a legitimate query for that
+  // sub-question could never enter again for the rest of the run. The condition
+  // is unchanged; only ok() became bug().
+  bug('BUG-06b', 'BUG-06 through the orchestrator door: a branches_to_close naming a sub-question that never existed blacklists it PERMANENTLY, so every later query for that sub-question is refused for the rest of the run',
     r.frontier.rejected.some(x => /already closed/.test(x.reason)),
     JSON.stringify(r.frontier.rejected));
 }

@@ -105,6 +105,11 @@ export class Frontier {
     this.usedIds = new Set();    // every id handed to an admitted node, ever
     this.rejected = [];          // {q, reason} — the audit trail
     this.closed = new Set();     // sub-question ids that are done
+    // Every sub that has ever HAD an admitted node. A branch the frontier has
+    // never seen is not a branch, and closing it must not bar it — see
+    // closeBranch().
+    this.knownBranches = new Set();
+    this.phantomClosed = new Set(); // closes for a sub that never existed: recorded, never enforced
     this.branchMiss = new Map(); // sub → consecutive uninformative results
     this.maxDepth = maxDepth;
     this.minPriority = minPriority;
@@ -124,12 +129,31 @@ export class Frontier {
    * bookkeeping and still goes to the round cap.
    */
   admit(node) {
+    // The gate is handed whatever the caller built. A non-object reached
+    // `node.q` and threw a TypeError straight out of the one function whose
+    // entire job is to say no calmly — and the throw escaped into the wave
+    // loop, where a bad candidate became a dead run. Refuse it like any other
+    // candidate, with a reason in the audit trail.
+    if (!node || typeof node !== 'object') {
+      return this.#reject({ q: '', sub: null, depth: null }, `admit() was handed ${node === null ? 'null' : typeof node}, which is not a node`);
+    }
     const key = queryKey(node.q);
     if (!node.q) return this.#reject(node, 'empty query');
     if (!key) return this.#reject(node, 'query has no content words');
     // Only an ADMITTED key is a duplicate. `seen` also holds every candidate
     // that was ever turned away, and those refusals were circumstantial.
     if (this.admittedKeys.has(key)) return this.#reject(node, 'duplicate of a query already admitted');
+    // A depth that is not a number is refused for exactly the reason a priority
+    // is (see below): the cap below is a `>` comparison, and every comparison
+    // against a string or NaN is false, so `depth: 'abc'` did not skip the cap,
+    // it passed a gate that reported it had checked. It then reached the sort,
+    // where `a.depth - b.depth` is the tie-break: a comparator that answers NaN
+    // is inconsistent, and the whole wave comes out in an unspecified order.
+    // makeNode deliberately does NOT coerce depth — a caller handing it a
+    // string has a bug, and hiding that bug behind a default would invent a
+    // position in the tree that nobody stated — so this gate is the only thing
+    // between that string and the comparator.
+    if (!Number.isFinite(node.depth)) return this.#reject(node, `depth ${String(node.depth)} (${typeof node.depth}) is not a number`);
     if (node.depth > this.maxDepth) return this.#reject(node, `deeper than the depth cap (${this.maxDepth})`);
     if (this.closed.has(node.sub)) return this.#reject(node, `branch '${node.sub}' is already closed`);
     // A priority that is not a number is refused, never defaulted. The floor
@@ -155,6 +179,7 @@ export class Frontier {
     this.usedIds.add(node.id);
     this.seen.add(key);
     this.admittedKeys.add(key);
+    if (node.sub) this.knownBranches.add(node.sub);
     this.nodes.push(node);
     this.nodes.sort((a, b) => b.priority - a.priority || a.depth - b.depth);
     return { admitted: true, node };
@@ -183,9 +208,30 @@ export class Frontier {
     return `${base}#${n}`;
   }
 
-  /** Mark a sub-question finished; its pending nodes are dropped. */
+  /**
+   * Mark a sub-question finished; its pending nodes are dropped.
+   *
+   * A close only bars a branch this frontier has actually SEEN — one that had
+   * an admitted node at some point in the run. Closing an id that never had a
+   * node (the analyst naming a sub-question it invented, or a malformed
+   * branches_to_close) used to add that id to `closed` before a single node was
+   * inspected, and every later query for that sub-question was refused for the
+   * rest of the run. That is the same life sentence #reject was taught not to
+   * hand out, entering through another door: the branch is not answered, it was
+   * never asked, and "answered" is the only thing a close is entitled to claim.
+   *
+   * Membership is tested against knownBranches, NOT against the pending nodes:
+   * the analyst closes a branch right after its wave was popped, so the branch
+   * that is legitimately being closed usually has zero pending nodes at that
+   * moment. Reading emptiness as "never existed" would un-close every branch
+   * the loop actually finishes.
+   *
+   * The ignored request is still RECORDED. A close nobody honoured is exactly
+   * the kind of thing the run report must not swallow in silence.
+   */
   closeBranch(sub, reason = 'answered') {
     if (!sub) return;
+    if (!this.knownBranches.has(sub)) { this.phantomClosed.add(sub); return 0; }
     this.closed.add(sub);
     const before = this.nodes.length;
     this.nodes = this.nodes.filter(n => {
@@ -308,6 +354,7 @@ export class Frontier {
       pending_queries,
       pending_queries_omitted: omitted > 0 ? omitted : 0,
       closed_branches: [...this.closed],
+      phantom_closed_branches: [...this.phantomClosed],
       rejected: this.rejected.slice(0, 50),
       rejected_total: this.rejected.length,
       seen_queries: this.seen.size,
