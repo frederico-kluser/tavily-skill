@@ -20,8 +20,9 @@
 // response has been seen we assume the most conservative real-world plan
 // (1 rps), because guessing high is what produces the 429 storm.
 
-import { mkdir, readFile, writeFile, rename, open, unlink } from 'node:fs/promises';
+import { mkdir, readFile, writeFile, rename, open, unlink, stat } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
+import { hostname } from 'node:os';
 import { join } from 'node:path';
 import { CACHE_DIR } from './state.mjs';
 import { sleep } from './flags.mjs';
@@ -40,31 +41,133 @@ const MAX_WAIT_MS = Number(process.env.SURF_BRAVE_MAX_WAIT_MS) || 15_000;
 
 const DISABLED = process.env.SURF_NO_RATE_LIMIT === '1';
 
+// Brave's window. Also the tolerance for a ledger timestamp that sits AHEAD of
+// our clock: see windowTimestamps().
+const WINDOW_MS = 1000;
+// How long acquireLock will wait for a sibling before giving up on the write.
+// The caller caps this further with whatever is left of MAX_WAIT_MS.
+const LOCK_TIMEOUT_MS = 3000;
+// A lock we cannot attribute to a live local process is only broken once it is
+// this old. Liveness beats age whenever we can establish it.
+const LOCK_STALE_MS = Number(process.env.SURF_BRAVE_LOCK_STALE_MS) || 30_000;
+// Upper bound on the stored window, so a nonsense learned rps cannot grow the
+// ledger without limit.
+const MAX_RECENT = 4096;
+
+// Who holds the lockfile. host:pid, so a HOME shared over NFS cannot mistake a
+// remote pid for a local one.
+const LOCK_OWNER = `${hostname()}:${process.pid}`;
+
 /** Keys never touch disk: the ledger is indexed by a short hash of the token. */
 function bucketId(key) {
   if (!key) return 'anon';
   return createHash('sha256').update(String(key)).digest('hex').slice(0, 16);
 }
 
-async function acquireLock(timeoutMs = 3000) {
-  await mkdir(CACHE_DIR, { recursive: true });
-  const start = Date.now();
-  while (Date.now() - start < timeoutMs) {
-    try {
-      const fh = await open(LOCK_FILE, 'wx');
-      await fh.close();
-      return true;
-    } catch (e) {
-      if (e.code !== 'EEXIST') return false;
-      await sleep(15 + Math.floor(Math.random() * 25));
-    }
+/** Does this pid still exist? EPERM means it does, and belongs to someone else. */
+function pidAlive(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    return !!e && e.code === 'EPERM';
   }
-  // Stale lock (a crashed process): break it rather than deadlocking the fleet.
-  try { await unlink(LOCK_FILE); } catch {}
-  return false;
 }
 
-async function releaseLock() {
+/**
+ * May we break the lock that is currently on disk?
+ *
+ * Only when its owner is provably gone. A lock naming a LIVE local pid belongs
+ * to a sibling that is mid-write: stealing it corrupts the ledger for both of
+ * us, and the previous code did exactly that on every timeout. When the owner
+ * cannot be identified at all (another host, a lock file truncated by a crash)
+ * age is the only evidence left, so we wait LOCK_STALE_MS before breaking it.
+ */
+async function lockIsAbandoned() {
+  let owner = '';
+  let ageMs = 0;
+  try {
+    owner = String(await readFile(LOCK_FILE, 'utf8')).trim();
+    ageMs = Date.now() - (await stat(LOCK_FILE)).mtimeMs;
+  } catch {
+    // Already gone, or unreadable: nothing for us to break.
+    return false;
+  }
+  const m = owner.match(/^(?:(.*):)?(\d+)$/);
+  const host = m && m[1] ? m[1] : null;
+  const pid = m ? Number(m[2]) : NaN;
+  if (Number.isFinite(pid) && (host === null || host === hostname())) {
+    // A living sibling. Leave the lock alone and proceed unlocked: losing one
+    // ledger write costs a little pacing accuracy, breaking a live lock costs
+    // the ledger itself.
+    return !pidAlive(pid);
+  }
+  // Unattributable. A negative age (a lockfile stamped in the future by a
+  // stepped clock) is NOT evidence of abandonment, so the comparison is
+  // one-sided on purpose.
+  return ageMs > LOCK_STALE_MS;
+}
+
+/**
+ * Take the ledger lock. Returns an owner token to hand back to releaseLock(),
+ * or null if we could not get it — in which case the caller still reads the
+ * ledger and paces itself, it just does not write its own slot back.
+ *
+ * `timeoutMs` is a CEILING the caller derives from its own MAX_WAIT_MS budget:
+ * waiting on a sibling's lock is still waiting, and blocking past that ceiling
+ * is precisely the harness-timeout hazard the budget exists to prevent.
+ */
+async function acquireLock(timeoutMs = LOCK_TIMEOUT_MS) {
+  try {
+    await mkdir(CACHE_DIR, { recursive: true });
+  } catch {
+    return null;
+  }
+  const start = Date.now();
+  for (;;) {
+    try {
+      const fh = await open(LOCK_FILE, 'wx');
+      try {
+        await fh.writeFile(LOCK_OWNER);
+      } finally {
+        await fh.close();
+      }
+      return LOCK_OWNER;
+    } catch (e) {
+      if (!e || e.code !== 'EEXIST') return null;
+    }
+    if (Date.now() - start >= timeoutMs) break;
+    await sleep(15 + Math.floor(Math.random() * 25));
+  }
+  if (await lockIsAbandoned()) {
+    try { await unlink(LOCK_FILE); } catch {}
+    // Breaking a dead owner's lock is only half the job: without this retry the
+    // request that paid the whole timeout still writes nothing, so its slot goes
+    // unrecorded and the siblings reading the ledger under-count the window.
+    try {
+      const fh = await open(LOCK_FILE, 'wx');
+      try {
+        await fh.writeFile(LOCK_OWNER);
+      } finally {
+        await fh.close();
+      }
+      return LOCK_OWNER;
+    } catch {
+      // Someone else got there first; proceed unlocked.
+    }
+  }
+  return null;
+}
+
+/** Release only OUR lock: if someone broke it and took it, it is not ours to delete. */
+async function releaseLock(token) {
+  try {
+    const owner = String(await readFile(LOCK_FILE, 'utf8')).trim();
+    if (owner && token && owner !== token) return;
+  } catch {
+    // Unreadable or already gone; fall through and clear whatever is left.
+  }
   try { await unlink(LOCK_FILE); } catch {}
 }
 
@@ -83,6 +186,34 @@ async function writeLedger(led) {
 }
 
 /**
+ * The timestamps of `raw` that are genuinely inside the current window.
+ *
+ * A slot is only inside the window if it was taken in the PAST. Anything ahead
+ * of `now` came from a clock that moved — an NTP step, a laptop resuming, a
+ * HOME shared between machines with different times — and the naive
+ * `now - t < 1000` filter accepted all of it, forever: the bucket stayed full,
+ * every acquireSlot computed an hour-long wait, tripped the MAX_WAIT_MS escape
+ * hatch and returned immediately, so pacing for that key was switched off in
+ * silence and every request went out unpaced.
+ *
+ * So: a small skew (up to one window) is clamped to `now`, which keeps pacing
+ * on the conservative side; anything further ahead cannot describe a request
+ * made inside the last second and is discarded. Either way the sanitised array
+ * is what gets written back, which heals a poisoned ledger on first contact.
+ */
+function windowTimestamps(raw, now) {
+  const kept = [];
+  for (const v of Array.isArray(raw) ? raw : []) {
+    const t = Number(v);
+    if (!Number.isFinite(t)) continue;
+    if (t > now + WINDOW_MS) continue;
+    const ts = t > now ? now : t;
+    if (now - ts < WINDOW_MS) kept.push(ts);
+  }
+  return kept.length > MAX_RECENT ? kept.slice(-MAX_RECENT) : kept;
+}
+
+/**
  * Reserve one request slot for `key`, waiting if the window is full.
  *
  * Returns { waitedMs, rps } so the caller can report the pacing it hit.
@@ -97,31 +228,33 @@ export async function acquireSlot(key, { signal } = {}) {
   for (;;) {
     let wait = 0;
     let rps = DEFAULT_RPS;
-    const locked = await acquireLock();
+    // The lock spin is spent INSIDE the wait budget, not on top of it.
+    const budget = Math.max(0, MAX_WAIT_MS - (Date.now() - startedAt));
+    const lock = await acquireLock(Math.min(LOCK_TIMEOUT_MS, budget));
     try {
       const led = await readLedger();
       const b = led[id] || {};
       rps = resolveRps(b);
       const now = Date.now();
       // Keep only the timestamps still inside the 1-second window.
-      const recent = (Array.isArray(b.recent) ? b.recent : []).filter(t => now - t < 1000);
+      const recent = windowTimestamps(b.recent, now);
 
       if (recent.length < rps) {
         recent.push(now);
         led[id] = { ...b, recent };
-        if (locked) await writeLedger(led);
+        if (lock) await writeLedger(led);
         return { waitedMs: now - startedAt, rps, paced: now - startedAt > 0 };
       }
       // Full: wait until the oldest timestamp leaves the window, plus jitter so
       // a burst of sibling processes does not re-collide on the same instant.
       const oldest = Math.min(...recent);
-      wait = Math.max(5, 1000 - (now - oldest)) + Math.floor(Math.random() * 60);
+      wait = Math.max(5, WINDOW_MS - (now - oldest)) + Math.floor(Math.random() * 60);
       led[id] = { ...b, recent };
-      if (locked) await writeLedger(led);
+      if (lock) await writeLedger(led);
     } catch {
       return { waitedMs: Date.now() - startedAt, rps, paced: false };
     } finally {
-      if (locked) await releaseLock();
+      if (lock) await releaseLock(lock);
     }
 
     if (Date.now() - startedAt + wait > MAX_WAIT_MS) {
@@ -137,7 +270,11 @@ export async function acquireSlot(key, { signal } = {}) {
 function resolveRps(bucket) {
   if (!bucket || !Number.isFinite(bucket.rps) || bucket.rps < 1) return DEFAULT_RPS;
   const at = Date.parse(bucket.at || '');
-  if (!Number.isFinite(at) || Date.now() - at > RATE_TTL_MS) return DEFAULT_RPS;
+  if (!Number.isFinite(at)) return DEFAULT_RPS;
+  // Same clock discipline as the window: a stamp far in the future is a broken
+  // clock, not a fresh reading, and it must not keep a stale 50 rps alive.
+  const age = Date.now() - at;
+  if (age > RATE_TTL_MS || age < -RATE_TTL_MS) return DEFAULT_RPS;
   return Math.max(1, Math.floor(bucket.rps));
 }
 
@@ -157,7 +294,7 @@ export async function learnFromHeaders(key, headers) {
   if (perSecond == null) return null;
 
   const id = bucketId(key);
-  const locked = await acquireLock();
+  const lock = await acquireLock();
   try {
     const led = await readLedger();
     const b = led[id] || {};
@@ -167,11 +304,11 @@ export async function learnFromHeaders(key, headers) {
       at: new Date().toISOString(),
       monthlyRemaining: parseMonthlyRemaining(remaining),
     };
-    if (locked) await writeLedger(led);
+    if (lock) await writeLedger(led);
   } catch {
     // Bookkeeping only.
   } finally {
-    if (locked) await releaseLock();
+    if (lock) await releaseLock(lock);
   }
   return perSecond;
 }
@@ -188,7 +325,7 @@ export async function learnFromBody(key, body) {
   if (!meta || !Number.isFinite(Number(meta.rate_limit))) return null;
   const rps = Math.max(1, Math.floor(Number(meta.rate_limit)));
   const id = bucketId(key);
-  const locked = await acquireLock();
+  const lock = await acquireLock();
   try {
     const led = await readLedger();
     const b = led[id] || {};
@@ -201,11 +338,11 @@ export async function learnFromBody(key, body) {
       plan: typeof meta.plan === 'string' ? meta.plan : b.plan,
       monthlyRemaining: Number.isFinite(used) && Number.isFinite(cap) ? cap - used : b.monthlyRemaining,
     };
-    if (locked) await writeLedger(led);
+    if (lock) await writeLedger(led);
   } catch {
     // Bookkeeping only.
   } finally {
-    if (locked) await releaseLock();
+    if (lock) await releaseLock(lock);
   }
   return rps;
 }
