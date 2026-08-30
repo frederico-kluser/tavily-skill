@@ -106,6 +106,30 @@ export function decodeEntities(s) {
 //     it is whitespace to some of the regexes below and not to others — a
 //     parser differential inside the sanitiser itself.
 //
+//     SOFT HYPHEN (U+00AD) gets the same answer, against the deletion rule's
+//     letter: at a line break some renderers draw a hyphen where it sits.
+//     That hyphen is not a glyph the text contains — hyphenation is the
+//     layout engine's business (its own algorithm draws the same hyphen
+//     where no U+00AD exists), and no writing system gives U+00AD a place in
+//     its glyph inventory or its lexicon. Deleting it cannot change which
+//     WORD is displayed anywhere, at any width. What keeping it buys is a
+//     break hint; what keeping it costs is the identical token-split vector
+//     ZWSP had: `scr<U+00AD>ipt` reads as "script" to every reader and as
+//     two tokens to every /\w/ matcher. Same class, same answer — and the
+//     cost is asymmetric in the same direction as the rest of this file
+//     (docs/debito-tecnico.md §4.3).
+//     Surrogates (U+D800–U+DFFF) and NONCHARACTERS (U+FDD0–U+FDEF, plus the
+//     last two code points of every plane) are not characters at all —
+//     Unicode excludes both from "character". A decoded `&#55296;` is an
+//     unpaired UTF-16 half: every renderer shows U+FFFD where it sits, and
+//     JSON.stringify escapes it, so the ledger ends up storing the literal
+//     text `\ud800` — seven characters that were never in the snippet — and
+//     a consumer without ES2019 well-formedness (Python's json, then utf-8)
+//     crashes re-reading the evidence this file certified. HTML5 calls a
+//     numeric reference to a surrogate a parse error for the same reason.
+//     None of them has a glyph or a word in any writing system, so deletion
+//     passes the rule even on its letter.
+//
 //     ZWNJ (U+200C) and ZWJ (U+200D) FAIL the deletion rule and are KEPT.
 //     ZWNJ is the difference between two Persian words and suppresses a
 //     Devanagari conjunct. ZWJ is what holds an emoji sequence together — a
@@ -141,6 +165,17 @@ export function decodeEntities(s) {
 //     readings above, and they are genuinely used to place punctuation in
 //     mixed-direction text.
 //
+//     INTERLINEAR ANNOTATION delimiters (U+FFF9–U+FFFB) join the marked set.
+//     They cannot reorder, but they restructure what is shown: the span
+//     between U+FFFA and U+FFFB renders as tiny ruby text in the renderers
+//     that implement them and as plain inline text in the rest — two
+//     readers, two weights of doubt about the same sentence, which is the
+//     RLO's asymmetry in a quieter key. Legitimate web use is obsolete
+//     (ruby moved to <ruby> markup decades ago; no browser implements the
+//     Unicode form), so the marker noise is cheap, while deleting them would
+//     hand the report a clean snippet that never says an annotation span
+//     was there.
+//
 // (c) DELETED, with one carve-out — the TAG characters (U+E0000–U+E007F).
 //     Unicode withdrew them from language tagging and re-used U+E0020–U+E007F
 //     for one thing: the emoji tag sequences spelling the flags of England,
@@ -158,19 +193,36 @@ function isControlCode(code) {
 }
 /** Invisible, and no script renders differently once it is gone. */
 function isInvisibleCode(code) {
-  return code === 0x200b || code === 0x2060 || code === 0xfeff
+  return code === 0x00ad || code === 0x200b || code === 0x2060 || code === 0xfeff
     || (code >= 0xe0000 && code <= 0xe007f);
 }
 /** Can reorder what is displayed. Named in the output rather than removed. */
 function isBidiCode(code) {
   return (code >= 0x202a && code <= 0x202e) || (code >= 0x2066 && code <= 0x2069);
 }
-const bidiMark = (code) => `[U+${code.toString(16).toUpperCase().padStart(4, '0')}]`;
+/** Interlinear annotation delimiters: restructure what is shown, never a letter. */
+function isInterlinearCode(code) {
+  return code >= 0xfff9 && code <= 0xfffb;
+}
+/** Not characters at all: unpaired halves of a UTF-16 pair. */
+function isSurrogateCode(code) {
+  return code >= 0xd800 && code <= 0xdfff;
+}
+/** Reserved so encodings have something not to encode; no glyph anywhere. */
+function isNoncharacterCode(code) {
+  return (code >= 0xfdd0 && code <= 0xfdef)
+    || (code & 0xffff) === 0xfffe || (code & 0xffff) === 0xffff;
+}
+const codeMark = (code) => `[U+${code.toString(16).toUpperCase().padStart(4, '0')}]`;
 
 // DEL and C1 are contiguous, hence the single \x7f-\x9f range.
 const CONTROL_CHARS = /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]/g;
-const INVISIBLE_CHARS = /[\u200b\u2060\ufeff]/g;
+const INVISIBLE_CHARS = /[\u00ad\u200b\u2060\ufeff]/g;
 const BIDI_CHARS = /[\u202a-\u202e\u2066-\u2069]/g;
+const INTERLINEAR_CHARS = /[\ufff9-\ufffb]/g;
+// The last two code points of every plane, plus U+FDD0–U+FDEF. Reserved so
+// encodings have nothing to encode; a decode must never hand one to a reader.
+const NONCHARACTERS = /[\u{FDD0}-\u{FDEF}\u{FFFE}\u{FFFF}\u{1FFFE}\u{1FFFF}\u{2FFFE}\u{2FFFF}\u{3FFFE}\u{3FFFF}\u{4FFFE}\u{4FFFF}\u{5FFFE}\u{5FFFF}\u{6FFFE}\u{6FFFF}\u{7FFFE}\u{7FFFF}\u{8FFFE}\u{8FFFF}\u{9FFFE}\u{9FFFF}\u{AFFFE}\u{AFFFF}\u{BFFFE}\u{BFFFF}\u{CFFFE}\u{CFFFF}\u{DFFFE}\u{DFFFF}\u{EFFFE}\u{EFFFF}\u{FFFFE}\u{FFFFF}\u{10FFFE}\u{10FFFF}]/gu;
 // A whole emoji tag sequence: the waving black flag, its tag letters and its
 // terminator. Matched so it can be stepped OVER, never stripped.
 const EMOJI_TAG_SEQ = /\u{1F3F4}[\u{E0020}-\u{E007E}]+\u{E007F}/gu;
@@ -190,19 +242,47 @@ function dropStrayTagChars(s) {
   return out + s.slice(last).replace(TAG_CHARS, '');
 }
 
+/**
+ * Delete UNPAIRED surrogate halves. A well-formed pair is one character and
+ * stays whole (it is how every emoji and most CJK-extended text is spelled in
+ * UTF-16); a lone half is not a character at all — see safeChar for why it
+ * must never reach the three readers.
+ */
+function scrubLoneSurrogates(s) {
+  if (!/[\uD800-\uDFFF]/.test(s)) return s;
+  let out = '';
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i);
+    if (c >= 0xd800 && c <= 0xdbff) {
+      const n = i + 1 < s.length ? s.charCodeAt(i + 1) : -1;
+      if (n >= 0xdc00 && n <= 0xdfff) { out += s[i] + s[i + 1]; i++; continue; }
+      continue; // unpaired high half
+    }
+    if (c >= 0xdc00 && c <= 0xdfff) continue; // unpaired low half
+    out += s[i];
+  }
+  return out;
+}
+
 /** Step 0. Runs before anything parses, for the reason in the header. */
 function scrubUnicode(s) {
-  return dropStrayTagChars(s)
+  return scrubLoneSurrogates(dropStrayTagChars(s)
     .replace(CONTROL_CHARS, '')
     .replace(INVISIBLE_CHARS, '')
-    .replace(BIDI_CHARS, (c) => bidiMark(c.codePointAt(0)));
+    .replace(NONCHARACTERS, '')
+    .replace(BIDI_CHARS, (c) => codeMark(c.codePointAt(0)))
+    .replace(INTERLINEAR_CHARS, (c) => codeMark(c.codePointAt(0))));
 }
 
 function safeChar(code) {
   if (!Number.isFinite(code) || code < 0 || code > 0x10ffff) return '';
-  if (isControlCode(code) || isInvisibleCode(code)) return '';
+  if (isControlCode(code) || isInvisibleCode(code) || isNoncharacterCode(code)) return '';
+  // A surrogate half has no character at all. HTML5 makes `&#55296;` a parse
+  // error for exactly this reason; materialising it would hand the ledger an
+  // escaped "\ud800" that was never in the text (see the header, step 0).
+  if (isSurrogateCode(code)) return '';
   // An entity is the same character with more steps; answer it the same way.
-  if (isBidiCode(code)) return bidiMark(code);
+  if (isBidiCode(code) || isInterlinearCode(code)) return codeMark(code);
   try { return String.fromCodePoint(code); } catch { return ''; }
 }
 
@@ -263,10 +343,15 @@ function neutralizeTags(s) {
  * Settle the characters that are not text, strip tags, decode entities,
  * collapse whitespace. Never returns null, never returns a control character,
  * and never returns a character that reorders the text around it.
+ *
+ * CR is part of the collapse: `\r\n` and a lone `\r` are the same newline
+ * spelled twice, so CR is normalised to `\n` before the whitespace rules run
+ * (TAB and SPACE collapse to one space; three or more newlines to two).
  */
 export function stripHtml(s) {
   if (typeof s !== 'string' || !s) return '';
   return neutralizeTags(decodeEntities(stripTags(scrubUnicode(s))))
+    .replace(/\r\n?/g, '\n') // CR is the same newline as LF, in another costume
     .replace(/[ \t]+/g, ' ')
     .replace(/\n{3,}/g, '\n\n')
     .trim();
