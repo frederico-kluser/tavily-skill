@@ -13,9 +13,24 @@ export const TTL_MS = (Number(process.env.SURF_CACHE_TTL || process.env.TAVILY_C
 // a cached response — see cacheClear().
 const ENTRY_RE = /^[0-9a-f]{24}\.json$/;
 
+// Canonical render of `body` for the cache key: object keys sorted
+// recursively, so the same search assembled by two call sites with the
+// properties in a different insertion order hashes to the same key (an
+// unordered object has no order). Array order is preserved — a list is an
+// ordered value, and reversing it changes the request.
+function canonicalJson(value) {
+  if (Array.isArray(value)) return value.map(canonicalJson);
+  if (value !== null && typeof value === 'object') {
+    const out = {};
+    for (const k of Object.keys(value).sort()) out[k] = canonicalJson(value[k]);
+    return out;
+  }
+  return value;
+}
+
 export function cacheKey(provider, endpoint, body) {
   return createHash('sha256')
-    .update(`${provider}:${endpoint}:${JSON.stringify(body || {})}`)
+    .update(`${provider}:${endpoint}:${JSON.stringify(canonicalJson(body || {}))}`)
     .digest('hex')
     .slice(0, 24);
 }

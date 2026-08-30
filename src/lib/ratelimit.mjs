@@ -41,6 +41,14 @@ const MAX_WAIT_MS = Number(process.env.SURF_BRAVE_MAX_WAIT_MS) || 15_000;
 
 const DISABLED = process.env.SURF_NO_RATE_LIMIT === '1';
 
+// What acquireSlot reports as rps when pacing is disabled (SURF_NO_RATE_LIMIT=1).
+// The honest answer is Infinity, but Infinity collapses to null under
+// JSON.stringify, so any --json envelope or ledger line made the consumer read
+// "unknown" where the truth was "no limit at all". MAX_SAFE_INTEGER is a
+// finite number — it round-trips through JSON, prints as a number, sorts as
+// one — and no real plan allowance can be mistaken for it.
+const UNLIMITED_RPS = Number.MAX_SAFE_INTEGER;
+
 // Brave's window. Also the tolerance for a ledger timestamp that sits AHEAD of
 // our clock: see windowTimestamps().
 const WINDOW_MS = 1000;
@@ -258,9 +266,16 @@ function windowTimestamps(raw, now) {
  * rather than blocking research on a bookkeeping failure.
  */
 export async function acquireSlot(key, { signal } = {}) {
-  if (DISABLED) return { waitedMs: 0, rps: Infinity, paced: false };
+  if (DISABLED) return { waitedMs: 0, rps: UNLIMITED_RPS, paced: false };
   const id = bucketId(key);
   const startedAt = Date.now();
+  // `paced` means "we actually waited for a slot", never "the lock and the
+  // ledger read took a millisecond". The old `now - startedAt > 0` was true
+  // on every lock acquisition — one slow stat() reported pacing that never
+  // happened, which brave.mjs then had to paper over with a 250ms threshold.
+  // It is flipped only right before a real sleep, so a slot granted on the
+  // first read reports paced: false no matter how long the lock took.
+  let paced = false;
 
   for (;;) {
     let wait = 0;
@@ -280,7 +295,7 @@ export async function acquireSlot(key, { signal } = {}) {
         recent.push(now);
         led[id] = { ...b, recent };
         if (lock) await writeLedger(led);
-        return { waitedMs: now - startedAt, rps, paced: now - startedAt > 0 };
+        return { waitedMs: now - startedAt, rps, paced };
       }
       // Full: wait until the oldest timestamp leaves the window, plus jitter so
       // a burst of sibling processes does not re-collide on the same instant.
@@ -300,6 +315,7 @@ export async function acquireSlot(key, { signal } = {}) {
       return { waitedMs: Date.now() - startedAt, rps, paced: true, gaveUp: true };
     }
     if (signal && signal.aborted) return { waitedMs: Date.now() - startedAt, rps, paced: true, aborted: true };
+    paced = true; // a real sleep for a slot is about to happen
     await sleep(wait);
   }
 }
@@ -370,8 +386,9 @@ export async function learnFromHeaders(key, headers) {
 export async function learnFromBody(key, body) {
   if (DISABLED) return null;
   const meta = body && body.error && body.error.meta;
-  if (!meta || !Number.isFinite(Number(meta.rate_limit))) return null;
-  const rps = Math.max(1, Math.floor(Number(meta.rate_limit)));
+  if (!meta) return null;
+  const rpsRaw = Number(meta.rate_limit);
+  const rps = Number.isFinite(rpsRaw) ? Math.max(1, Math.floor(rpsRaw)) : null;
   const id = bucketId(key);
   const lock = await acquireLock();
   try {
@@ -380,12 +397,17 @@ export async function learnFromBody(key, body) {
     const used = Number(meta.quota_current);
     const cap = Number(meta.quota_limit);
     const left = Number.isFinite(used) && Number.isFinite(cap) ? cap - used : null;
+    // A body whose meta is missing rate_limit still names the plan and the
+    // quota counters, and both are worth keeping: the per-second allowance is
+    // the only fact that needs rate_limit. Only `rps`/`at` are gated on it.
+    if (rps == null && left == null && typeof meta.plan !== 'string') return null;
     led[id] = {
       ...b,
-      rps,
-      at: new Date().toISOString(),
+      ...(rps == null ? {} : { rps, at: new Date().toISOString() }),
       plan: typeof meta.plan === 'string' ? meta.plan : b.plan,
-      monthlyRemaining: left ?? b.monthlyRemaining,
+      // A counter that went over its cap must never display as a negative
+      // number of requests left; the month is spent, so it reads 0.
+      monthlyRemaining: left == null ? b.monthlyRemaining : Math.max(0, left),
       // The body names the counters but never says WHEN the month turns over,
       // so it can lift an exhaustion mark (quota is back) but never invent one.
       // It does not need to: brave.mjs learns from the same 429's headers first,
@@ -414,7 +436,10 @@ export async function monthlyRemaining(key) {
   if (DISABLED) return null;
   const led = await readLedger();
   const b = led[bucketId(key)];
-  return b && Number.isFinite(b.monthlyRemaining) ? b.monthlyRemaining : null;
+  // Clamp at read as well as at write: a ledger written by an older build (or
+  // a hand edit) can hold a negative value from an over-spent counter, and a
+  // display of "-5 left" would invent requests the month does not have.
+  return b && Number.isFinite(b.monthlyRemaining) ? Math.max(0, b.monthlyRemaining) : null;
 }
 
 /** The per-second allowance we currently believe this key has. */
@@ -502,12 +527,10 @@ function parseQuotaResetAt(reset) {
 }
 
 /**
- * The monthly field of `x-ratelimit-remaining`, parsed STRICTLY.
- *
- * parseMonthlyRemaining() is lenient — it trusts Number(""), so "1, " reads as
- * 0. That is tolerable for a display counter and intolerable here, because this
- * is the value that decides whether a key gets stood down for a month. A field
+ * The monthly field of `x-ratelimit-remaining`, parsed STRICTLY. This is the
+ * value that decides whether a key gets stood down for a month, so a field
  * that is not plainly an integer is "unknown", never "your month is gone".
+ * (The display counter parses by the same rule — see parseMonthlyRemaining().)
  */
 function strictMonthlyRemaining(remaining) {
   if (typeof remaining !== 'string') return null;
@@ -528,14 +551,22 @@ function getHeader(headers, name) {
  * "x-ratelimit-limit: 1, 2000" when the policy header is absent.
  *
  * The monthly window length is account-dependent (31 days observed where the
- * docs say 30), so we match on `w=1` rather than assuming field order.
+ * docs say 30), so we match on `w=1` rather than assuming field order. When a
+ * policy lists MORE than one w=1 bucket, the SMALLEST one wins: two
+ * contradictory per-second allowances make the smaller the only safe guess,
+ * and the first-listed one is just whatever order the server chose.
  */
 export function parsePerSecond(policy, limit) {
   if (typeof policy === 'string' && policy.trim()) {
+    let min = null;
     for (const part of policy.split(',')) {
       const m = part.trim().match(/^(\d+)\s*;\s*w\s*=\s*(\d+)$/);
-      if (m && Number(m[2]) === 1) return Math.max(1, Number(m[1]));
+      if (m && Number(m[2]) === 1) {
+        const v = Math.max(1, Number(m[1]));
+        if (min === null || v < min) min = v;
+      }
     }
+    if (min !== null) return min;
   }
   if (typeof limit === 'string' && limit.trim()) {
     const first = Number(limit.split(',')[0].trim());
@@ -546,10 +577,15 @@ export function parsePerSecond(policy, limit) {
 
 /** "0, 118" → 118 (the monthly bucket is the second field). */
 export function parseMonthlyRemaining(remaining) {
-  if (typeof remaining !== 'string') return null;
-  const parts = remaining.split(',').map(s => Number(s.trim()));
-  if (parts.length < 2 || !Number.isFinite(parts[1])) return null;
-  return parts[1];
+  // The display counter parses by the same strict rule as the exhaustion
+  // decision (strictMonthlyRemaining), not by Number(): Number("") is 0, so
+  // a header with a dangling comma used to report "0 left this month" where
+  // the header actually said nothing about the month. Unknown stays unknown.
+  const strict = strictMonthlyRemaining(remaining);
+  if (strict == null) return null;
+  // A negative value means the counter went over its cap; the month is spent,
+  // so the display reads 0, never a negative ("0, -5" used to pass through).
+  return Math.max(0, strict);
 }
 
 /**
