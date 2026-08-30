@@ -88,7 +88,7 @@ plan / design ──▶ surf-plan-agent-skill ──▶ Normal (research-grounde
 
 | | |
 |---|---|
-| **Status** | v8.0.0 (npm) — **breaking**: Brave-only, see [the changelog](CHANGELOG.md) |
+| **Status** | v8.0.1 (npm) — **breaking**: Brave-only, see [the changelog](CHANGELOG.md) |
 | **Install** | `npm i -g surf-agent-skill` (Linux · macOS · Windows) |
 | **Search backend** | **Brave Search only.** No fallback provider, no keyless tier. A missing or invalid key is exit 78. |
 | **Skills shipped** | `surf-research-agent-skill` (surf-ai) · `surf-plan-agent-skill` |
@@ -142,10 +142,10 @@ Long briefs go in a file: `--brief-file brief.json` with
 |---|---|---|
 | Waves | Exactly 1 | Until resolved, saturated, or every branch closes (cap 6, `--max-rounds` up to 50) |
 | Depth | ≤ 2 | ≤ 3 (`--max-depth`, max 6) |
-| Sub-agents per wave | ≤ 10 (`--sub-agents`) | ≤ 10 (`--sub-agents`) |
+| Sub-agents per wave | 10 by default, max 20 (`--sub-agents`) | 10 by default, max 20 (`--sub-agents`) |
 | Time | Fitted inside the harness bash timeout | No self-imposed deadline |
 | LLM calls | 2 | 2 + 1 per extra wave |
-| Brave requests | ≤ 10 | ≤ waves × `--sub-agents` |
+| Brave requests | ≤ `--max-queries` (default 10) | ≤ waves × `--sub-agents` |
 | Typical | 45–110 s · ~$0.01–0.03 | 2–15 min · ~$0.03–0.15 |
 
 A wave is not a bigger round: a depth-2 query exists **because** a depth-1
@@ -227,8 +227,9 @@ try {
   await search('x', { braveKeys: [] });
 } catch (e) {
   if (e instanceof GateError) console.error(e.code); // 'BraveKeyMissing'
+  // e.code is one of BraveKeyMissing / BraveKeyBurned / BraveKeyCooling /
+  // BraveKeyInvalid / BraveKeyUnverified — all five match /^BraveKey/.
 }
-console.log(job.data.content);
 ```
 
 **The whole surf-ai loop is importable too** — same engine as the CLI:
@@ -404,12 +405,14 @@ surf-research-skill project-config
 ```
 
 Without this, any `surf-research-skill` command other than `--help`, `--version`,
-`keys list/add`, or `search --max 1` will time out. With it, you can use
+`gate`, `keys list/add`, or `search --max 1` will time out. With it, you can use
 the full command set up to ~5 min per call.
 
-For longer operations, use Copilot CLI's async pattern: `/delegate` the
-`surf-research-skill research-start ...` call, then poll with `surf-research-skill
-research-poll <id>` from a regular session.
+There is no async pattern to fall back on: `research-start` and
+`research-poll` were **removed in v8** and now exit 2. For longer work, raise
+the timeout with `project-config` and use `surf-search-normal` (which fits
+itself inside whatever budget it is told about), or `/delegate` the whole
+`surf-search-unlimit` call and let it run to completion in that session.
 
 If surf-research-skill detects the agent will likely kill the call before it can
 finish, it now aborts early with `LikelyAgentTimeout` and tells the agent
@@ -496,11 +499,9 @@ If you see timeouts, the order of fixes:
    `surf-research-skill project-config` or pass `--budget-ms 25000`.
 1. On a **no-limit harness (Pi core)**, the manual commands need `--no-budget`
    (or `SURF_NO_TIMEOUT=1`) so surf doesn't self-abort at its 30 s guess.
-2. Use `surf-research-skill research-start` + `research-poll` instead of sync
-   `research`.
-3. Reduce `--limit` / `--max` / `--max-depth` / `--max-queries`.
-4. Bump the per-harness timeout (see the relevant card above).
-5. Set `SURF_TIMEOUT_MS=300000` (caps the HTTP request itself at 5 min) or
+2. Reduce `--max` / `--max-depth` / `--max-queries` / `--max-rounds`.
+3. Bump the per-harness timeout (see the relevant card above).
+4. Set `SURF_TIMEOUT_MS=300000` (caps the HTTP request itself at 5 min) or
    `SURF_AI_TIMEOUT_MS` (caps a single LLM call, default 120 s).
 
 ---
@@ -533,7 +534,8 @@ surf-ai flags:
 --concurrency N    deprecated alias for --sub-agents
 --max-depth N      how far a branch may descend (normal 2, unlimit 3, max 6)
 --max-rounds N     wave cap, unlimit only (default 6, hard cap 50)
---max-queries N    frontier admissions per wave (>= --sub-agents)
+--max-queries N    frontier admissions per wave (normal 10, unlimit 14, max 40).
+                   Always raised to at least --sub-agents.
 --max N            results per search (1-20). Overrides --search-mode.
 --budget-ms N      normal only — pass the timeout you gave the Bash call. 0 = unlimited
 --ai-model <slug>  override the LLM (default deepseek/deepseek-v4-pro)
@@ -550,6 +552,7 @@ will not help** · `143` the harness killed it.
 
 | Command | What it does |
 |---|---|
+| `gate [--json]` | **Is there a usable Brave key?** Exit `0` = yes, `78` = no. Use this, not `keys list`, to check |
 | `setup` | Interactive wizard: your Brave key (required) + OpenRouter (TTY) |
 | `project-config` | Write per-project bash-timeout config |
 | `search <q> [q2 ...]` | Web search; multiple positional args = **batch** (sequential) |
@@ -566,6 +569,22 @@ explanation rather than an "unknown command". If you need a page's text, follow
 the URL yourself. (Brave *does* ship an `/llm/context` endpoint that returns
 extracted page content, but it is plan-gated — see
 [`references/brave-api.md`](references/brave-api.md).)
+
+### Checking the key before you spend anything
+
+```bash
+surf-research-skill gate || echo "no usable Brave key (exit 78)"
+surf-research-skill gate --json     # masked diagnostic: verdict, code, key index
+```
+
+`gate` is the only verb that both **runs without a key** and **reports the
+answer in its exit code** — exit `0` a usable key exists, exit `78` it does not
+and retrying will not help. Use it, not `keys list`: `keys list` also runs
+without a key (it has to — a missing key is diagnosed by listing the keys), but
+it is a report and **always exits 0**, so branching on it is a dead branch.
+
+`--json` prints the verdict, the `BraveKey*` code, the key index and the
+keys file. Every key value in it is masked; no key material reaches stdout.
 
 Full reference: `SKILL.md`.
 
@@ -826,8 +845,8 @@ surf-research-skill keys list
 # **Surf keys** (config: ~/.config/surf/keys.json)
 # last_ok_provider: `brave`
 # ## brave (2 keys)
-# - [0] BSA-…ab12  *(current, validated 2026-08-29)*
-# - [1] BSA-…cd34
+# - [0] BSA-A…ab12  *(current, validated 2026-08-29)*
+# - [1] BSA-B…cd34            <- a key the gate has proved bad shows *(INVALID)*
 # ## openrouter (1 key)
 # - [0] sk-or…9f2c  *(current)*
 
@@ -860,15 +879,35 @@ the harness killed the calls (raise the timeout, see above) or the key ran out
 of monthly quota. Note this is *not* the missing-key case: that exits **78**
 before any search runs.
 
-**`❌ Error [BraveKeyMissing|BraveKeyBurned|BraveKeyCooling|BraveKeyInvalid]`** (exit **78**)
+**`❌ Error [BraveKeyMissing|BraveKeyBurned|BraveKeyCooling|BraveKeyInvalid|BraveKeyUnverified]`** (exit **78**)
 → The gate. There is no usable Brave key, so nothing ran. The message names the
 exact fix. 78 is `EX_CONFIG` — distinct from 1 and 2 precisely so an
-orchestrating agent knows that retrying is pointless.
+orchestrating agent knows that retrying is pointless. All five codes start with
+`BraveKey`, so `/^BraveKey/` still matches the whole family.
 - `BraveKeyMissing` → `surf-research-skill keys add --provider brave <key>`
 - `BraveKeyBurned` → `surf-research-skill keys reset --provider brave`
   (burns also clear on the 1st of the month)
 - `BraveKeyCooling` → wait out the rate-limit cooldown, or add a second key
-- `BraveKeyInvalid` → the key was rejected by Brave; replace it
+- `BraveKeyInvalid` → Brave answered and **rejected the token**. Do not delete
+  the key on this alone: **the verdict is cached for up to 7 days**, so the
+  message you are reading may be a week old. Run
+  `surf-research-skill keys reset --provider brave` first — it clears the cached
+  verdict and the cooldowns, and the next command re-tests the key live, for
+  free. Only if it is rejected *again* after that is the key really dead:
+  `surf-research-skill keys remove --provider brave <index>`, then add a working
+  one.
+- `BraveKeyUnverified` → **nothing was decided about your key.** The probe never
+  got an answer — a dropped connection, DNS, a timeout, a 5xx from Brave, or a
+  status no one can attribute (captive portal, corporate proxy). Those are facts
+  about the *path* to Brave, not about the key, so **no verdict was cached** and
+  the next command re-probes for free. Fix this machine's network or wait out
+  the Brave outage, then re-run the same command; `surf doctor` re-checks the
+  gate without spending a search. **Never remove a key on account of this
+  message** — it was never judged. (This verdict exists because a network blip
+  used to be recorded as `BraveKeyInvalid` and cached for 7 days, which turned a
+  three-second wifi drop into a week of exit 78 that survived a reboot. Only
+  Brave rejecting the token — `kind === 'auth'` — may convict a key now; see
+  `provesKeyBad` in `src/lib/preflight.mjs`.)
 
 **`--sub-agents 10` but the wave takes ten seconds**
 → That is the rate limiter, not a hang. Your Brave plan allows fewer requests
@@ -923,17 +962,17 @@ first when env vars are set.
 → Pass `--confirm-expensive` after confirming the cost with the user. Or
 export `SURF_ALLOW_EXPENSIVE=1` for the session.
 
-**`Refusing sync research with model=pro`**
-→ Use `surf-research-skill research-start --model pro ...` then `surf-research-skill
-research-poll <id>`. Sync research is capped at 50 s on purpose.
+**`❌ Error [BraveKeyUnverified]: ...`** (exit **78**)
+→ The gate could not reach Brave, so it refused to guess. Nothing was written to
+`keys.json`. Check the network and re-run — see the surf-ai section above.
 
 ---
 
-## Repository layout (v7.0.0)
+## Repository layout (v8.0.1)
 
 ```text
 .
-├── package.json                       ← name: surf-agent-skill (npm), version 8.0.0, 5 bins
+├── package.json                       ← name: surf-agent-skill (npm), version 8.0.1, 5 bins
 ├── README.md           ← you're here
 ├── CHANGELOG.md
 ├── LICENSE
@@ -956,7 +995,13 @@ research-poll <id>`. Sync research is capped at 50 s on purpose.
 │   └── surf-plan-agent-skill/SKILL.md       ← planning (auto-routes to an ambiguity-sweep mode)
 ├── test/
 │   ├── smoke.mjs                      ← offline suite: stubs fetch, temp HOME
-│   └── brave.mjs                      ← adapter, flags, frontier, key gate — regression tests for every v7 defect
+│   ├── brave.mjs                      ← adapter, flags, frontier, key gate — regression tests for every v7 defect
+│   └── adversarial/                   ← the release gate (`npm run test:adversarial`)
+│       ├── brave-limits.mjs           ← Brave's caps: count 1-20, offset 0-9, 422 vs 400
+│       ├── flags-cli.mjs              ← flag parsing: the question must survive every typo
+│       ├── gate-state.mjs             ← keys.json + the gate: what may and may not be cached
+│       ├── lib-install.mjs            ← library entry points and the cross-OS symlink install
+│       └── loop-frontier.mjs          ← the deepening tree: priority, depth, branch closure
 ├── src/
 │   ├── index.mjs                      ← library entry (search / searchParallel)
 │   ├── env.mjs                        ← key discovery (opts > env > .env > config)
@@ -1021,7 +1066,8 @@ research-poll <id>`. Sync research is capped at 50 s on purpose.
   That is what makes it usable from serverless and CI. Pass
   `skipDotenv: true` / `skipConfigFile: true` to switch those levels off.
 - The audit log records only `provider` name and key **index**, never the
-  key itself. `surf-research-skill keys list` masks every key (`tvly-…ab12`).
+  key itself. `surf-research-skill keys list` masks every key (`BSA-A…ab12` — first 5
+  characters, then the last 4).
 - The skill never executes content returned from the web — it just prints it.
 - **Prompt injection.** surf-ai feeds retrieved page text to an LLM, so
   fetched content is an input to a model, not just to your terminal. Every
