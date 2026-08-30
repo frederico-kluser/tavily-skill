@@ -5,6 +5,7 @@ import {
   setValidation, getValidation, PROVIDERS, KEYS_FILE,
 } from './state.mjs';
 import { maskKey } from './flags.mjs';
+import { progress } from './progress.mjs';
 import { validateAll, formatValidation } from '../validators/index.mjs';
 
 // Read newline-delimited keys from stdin (for `keys add --provider X --stdin`
@@ -15,6 +16,55 @@ async function readStdinKeys() {
   for await (const chunk of process.stdin) chunks.push(chunk);
   return Buffer.concat(chunks).toString('utf8')
     .split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+}
+
+// ------------------------------------------------ what a failure proves ---
+//
+// The SAME question src/lib/preflight.mjs asks in provesKeyBad(), asked here
+// for the same reason, with the same answer. Do not grow a second taxonomy:
+// two copies of "is this key bad?" are two ways to condemn a working key.
+//
+// `keys add` used to make the mirror image of the mistake the gate used to
+// make. The gate cached a wifi blip as "invalid key" for 7 days; `keys add`
+// REFUSED a brand-new, perfectly good key with
+// "validation failed: Brave network error..." and did not store it at all.
+// Picture the person that lands on: they bought the key ten seconds ago, they
+// are on hotel wifi or behind a corporate proxy, surf tells them the key does
+// not work, and they go delete it and buy another one.
+//
+// Exactly ONE thing is evidence about the KEY: Brave rejecting the
+// subscription token (kind 'auth' — a 401/403/402, or a 422 whose error.code
+// is SUBSCRIPTION_TOKEN_INVALID). 'network' (dropped connection, DNS,
+// timeout), 'server_5xx' (Brave is down) and any unattributed status from a
+// captive portal or a proxy are evidence about the PATH to Brave. Whitelist,
+// not blacklist: an unknown failure kind must not be able to convict a key.
+//
+// A 429 never even reaches here as a failure: the validator returns valid
+// (throttled) for it, because being counted at all proves the token was
+// accepted. Same for a plan gate.
+//
+// The one class this file sees that the gate never does: validateKey()
+// refuses an empty/too-short key ('malformed') and an unknown provider
+// ('unknown_provider') BEFORE any request leaves this machine. No path was
+// travelled, so there is no path to blame — those stay refusals.
+const DECIDED_WITHOUT_A_REQUEST = new Set(['malformed', 'unknown_provider']);
+
+function provesKeyBad(r) {
+  if (!r || r.valid !== false) return false;
+  return r.kind === 'auth' || DECIDED_WITHOUT_A_REQUEST.has(r.kind);
+}
+
+/**
+ * What to tell someone whose key was stored without ever being checked.
+ * Plain sentences on purpose: the failure mode this repairs is a user reading
+ * a diagnostic as a verdict and deleting a key that works.
+ */
+function unverifiedNote(v) {
+  const why = (v && (v.error || v.kind)) ? ` (${v.error || v.kind})` : '';
+  return 'saved, but NOT verified yet: surf could not reach Brave to check it'
+    + why + '. Brave never rejected this key — no verdict was recorded against '
+    + 'it, so the next surf command checks it again on its own, and checking is '
+    + 'free. Do not delete this key because of this message.';
 }
 
 function requireProvider(flags, allowAll = false) {
@@ -149,21 +199,46 @@ export async function keysAdd(pos, flags) {
   const results = [];
   toAdd.forEach((key, i) => {
     const validation = validations[i] || null;
-    if (validation && !validation.valid) {
+    // Brave said no. That is the only refusal there is.
+    if (provesKeyBad(validation)) {
       results.push({ key, added: false, reason: `validation failed: ${formatValidation(validation)}`, validation });
       return;
     }
+    // Nobody answered (network / 5xx / an unattributed status). The key is
+    // stored anyway: we learned nothing about it, and refusing here throws
+    // away a key the user just paid for on the strength of their wifi.
+    const unproven = !!validation && validation.valid === false;
     state[provider].keys.push(key);
     const index = state[provider].keys.length - 1;
     // Record the verdict so the preflight gate does not re-prove this key on
     // the very next command. Free either way, but it costs a round-trip and a
     // slot in Brave's 1-second rate window.
-    if (validation) {
+    //
+    // ONLY a real verdict is recorded, and only a positive one can come from
+    // here. An `ok:false` written from a blip is the exact defect preflight.mjs
+    // killed: it is persisted and honoured for 7 days, so three seconds of bad
+    // wifi become a week of exit 78 on a key that works. Writing nothing costs
+    // one free round-trip on the next run; writing it costs the week.
+    if (validation && validation.valid) {
       setValidation(state, provider, index, {
-        ok: validation.valid, status: validation.statusCode, reason: validation.valid ? null : (validation.error || validation.kind),
+        ok: true, status: validation.statusCode, reason: null,
       });
     }
-    results.push({ key, added: true, index, validation });
+    results.push({
+      key, added: true, index,
+      // `validation` is what the CLI renders as "(validated, ...)" — the one
+      // thing that did not happen. The diagnostic keeps its own field.
+      validation: unproven ? null : validation,
+      ...(unproven ? {
+        verified: false,
+        probe: {
+          kind: validation.kind || null,
+          status: validation.statusCode ?? null,
+          error: validation.error || null,
+        },
+        note: unverifiedNote(validation),
+      } : {}),
+    });
   });
   for (const key of already) results.push({ key, added: false, reason: 'already exists' });
 
@@ -177,6 +252,18 @@ export async function keysAdd(pos, flags) {
   // own error text, which may echo the token back at us.
   const secrets = [...new Set([...inputKeys, ...allKeys(state)])].sort((a, b) => b.length - a.length);
   const safeResults = results.map(r => ({ ...redactDeep(r, secrets), key: maskKey(r.key) }));
+
+  // Say it out loud, not only in the JSON. In text mode the CLI prints these
+  // as a plain "✓ added [0] BSA…0001 to brave", which on its own reads as
+  // "checked and fine". stderr, so `--json` stdout stays parseable — and
+  // emitted from the REDACTED copy, because `probe.error` and `note` quote
+  // the provider's own text, which is not guaranteed to be free of the token
+  // it is complaining about.
+  for (const r of safeResults) {
+    if (r.added && r.verified === false) {
+      progress.warn(`keys add: [${r.index}] ${r.key} ${r.note}`);
+    }
+  }
 
   return {
     provider,
