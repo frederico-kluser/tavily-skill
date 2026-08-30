@@ -40,19 +40,57 @@ const VALUED_FLAGS = new Set([
   'format', 'query', 'key', 'harness',
 ]);
 
+// Flags that MAY take a value but are also meaningful on their own — `--answer`
+// alone means "yes", `--answer basic` picks a format. These are the ONLY names
+// outside VALUED_FLAGS still allowed to consume the token after them.
+//
+// ADDING A FLAG: put its name in exactly one of BOOLEAN_FLAGS, VALUED_FLAGS or
+// OPTIONAL_VALUE_FLAGS. A name in none of the three still parses, but as a
+// value-less switch — see parseFlags.
+const OPTIONAL_VALUE_FLAGS = new Set([
+  'answer', 'raw',
+]);
+
 /**
  * Parse argv into positionals and flags.
  *
- * Supports both `--flag value` and `--flag=value`. The `=` form matters:
- * `sub-agents=N` is the documented spelling, and without it `--sub-agents=10`
- * produced the flag key `"sub-agents=10"` AND swallowed the next positional.
+ * Supports `--flag value`, `--flag=value`, and the POSIX `--` end-of-options
+ * separator. The `=` form matters: `sub-agents=N` is the documented spelling,
+ * and without it `--sub-agents=10` produced the flag key `"sub-agents=10"` AND
+ * swallowed the next positional.
+ *
+ * THE RULE THAT KEEPS THE QUESTION ALIVE: only a name this file KNOWS takes a
+ * value (VALUED_FLAGS, OPTIONAL_VALUE_FLAGS) may consume the token after it.
+ * An unrecognised `--deep` — a typo, a flag from an older version, a flag some
+ * wrapper adds — is recorded as `true` and the next token stays a positional.
+ * Before, it ate the question: the CLI then searched something else, or
+ * nothing at all, and spent Brave quota doing it, silently.
  */
 export function parseFlags(argv) {
   const pos = [];
   const flags = {};
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
-    if (!a.startsWith('--')) { pos.push(a); continue; }
+
+    // POSIX end-of-options. Everything after it is a positional, verbatim —
+    // the escape hatch for a query that starts with a dash. `--` used to parse
+    // as a flag named "" that swallowed the query behind it.
+    if (a === '--') {
+      for (let j = i + 1; j < argv.length; j++) pos.push(argv[j]);
+      break;
+    }
+
+    // A bare `-` is the conventional stdin placeholder, not a flag.
+    if (a === '-' || !a.startsWith('-')) { pos.push(a); continue; }
+
+    if (!a.startsWith('--')) {
+      // Single dash. surf has no short options beyond the `-h`/`-v` the bins
+      // resolve before parsing, so this is a typo (`-q "question"`). Record it
+      // as a switch and NEVER consume the next token: falling through to `pos`
+      // made `-q "question"` research the literal string "-q question".
+      flags[a.slice(1)] = true;
+      continue;
+    }
 
     // `--flag=value` — split first, then coerce, so `--json=false` disables
     // rather than enabling a boolean switch.
@@ -68,14 +106,21 @@ export function parseFlags(argv) {
     if (BOOLEAN_FLAGS.has(k)) { flags[k] = true; continue; }
 
     const next = argv[i + 1];
-    const missing = next === undefined || next.startsWith('--');
+    const missing = next === undefined || next === '--' || next.startsWith('--');
     if (VALUED_FLAGS.has(k)) {
       if (missing) throw new FlagError(`--${k} needs a value (e.g. --${k}=<value>)`);
       flags[k] = next; i++;
       continue;
     }
-    if (missing) flags[k] = true;
-    else { flags[k] = next; i++; }
+    if (OPTIONAL_VALUE_FLAGS.has(k)) {
+      // Dual-use: take the next token only when it cannot be another option.
+      if (missing || next.startsWith('-')) { flags[k] = true; continue; }
+      flags[k] = next; i++;
+      continue;
+    }
+
+    // Unrecognised name: a switch, and the next token is left alone.
+    flags[k] = true;
   }
   return { pos, flags };
 }
@@ -146,9 +191,14 @@ export function flat(v) {
   return flat(v.message) || flat(v.error) || flat(v.detail) || JSON.stringify(v);
 }
 
+// Below this length the head+tail slices below overlap or all but cover the
+// string, so the "mask" printed the key itself. A mask that does not mask is
+// worse than none: the caller believes the value is safe to log or paste.
+const MASK_MIN_LEN = 12;
+
 export function maskKey(key) {
   if (!key || typeof key !== 'string') return '<empty>';
-  if (key.length <= 9) return key.slice(0, 2) + '…' + key.slice(-2);
+  if (key.length < MASK_MIN_LEN) return `…(${key.length} chars)`;
   return key.slice(0, 5) + '…' + key.slice(-4);
 }
 
