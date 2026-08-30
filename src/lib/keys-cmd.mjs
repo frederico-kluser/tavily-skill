@@ -20,9 +20,12 @@ async function readStdinKeys() {
 
 // ------------------------------------------------ what a failure proves ---
 //
-// The SAME question src/lib/preflight.mjs asks in provesKeyBad(), asked here
-// for the same reason, with the same answer. Do not grow a second taxonomy:
-// two copies of "is this key bad?" are two ways to condemn a working key.
+// The ONE definition of "does this failure prove the KEY is bad?" —
+// `provesKeyBad()` — lives in src/lib/preflight.mjs and is exported from
+// there, so the gate and `keys add` share a single taxonomy instead of two
+// copies of the same question (two copies were two ways to condemn a working
+// key). The predicate below layers the ONE class this file sees and the gate
+// never does on top of it; it is a second question, not a second answer.
 //
 // `keys add` used to make the mirror image of the mistake the gate used to
 // make. The gate cached a wifi blip as "invalid key" for 7 days; `keys add`
@@ -49,9 +52,21 @@ async function readStdinKeys() {
 // travelled, so there is no path to blame — those stay refusals.
 const DECIDED_WITHOUT_A_REQUEST = new Set(['malformed', 'unknown_provider']);
 
-function provesKeyBad(r) {
-  if (!r || r.valid !== false) return false;
-  return r.kind === 'auth' || DECIDED_WITHOUT_A_REQUEST.has(r.kind);
+// The shared definition from the gate — a single taxonomy, exercised by the
+// preflight gate and by `keys add` alike. Never grow a second copy here.
+import { provesKeyBad as gateProvesKeyBad } from './preflight.mjs';
+
+/**
+ * Should `keys add` refuse this validate() result?
+ *
+ * The gate's own predicate (the shared definition of "proves the key bad")
+ * plus the refusals this file decides before any request leaves the machine.
+ * The import is named to keep the layering visible: one taxonomy, one local
+ * additive exception, no second copy.
+ */
+function refuseOnValidation(r) {
+  if (gateProvesKeyBad(r)) return true;
+  return !!r && DECIDED_WITHOUT_A_REQUEST.has(r.kind);
 }
 
 /**
@@ -200,7 +215,7 @@ export async function keysAdd(pos, flags) {
   toAdd.forEach((key, i) => {
     const validation = validations[i] || null;
     // Brave said no. That is the only refusal there is.
-    if (provesKeyBad(validation)) {
+    if (refuseOnValidation(validation)) {
       results.push({ key, added: false, reason: `validation failed: ${formatValidation(validation)}`, validation });
       return;
     }

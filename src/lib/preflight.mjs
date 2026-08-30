@@ -41,6 +41,13 @@ export const GATE = {
   COOLING: 'cooling',
   UNVALIDATED: 'unvalidated',
   INVALID: 'invalid',
+  // "The key exists, but nothing has proven Brave will take it." Distinct
+  // from UNVALIDATED, which is the OFFLINE LOOK (what gateStatus reports
+  // before any verdict exists), and from UNREACHABLE, which means "we tried
+  // and nobody answered": PRESENT_UNPROVEN is the VERDICT an offline caller
+  // gets when it explicitly forbade the one free probe that would have
+  // settled the question. Presence is not proof, and the word must not be.
+  PRESENT_UNPROVEN: 'present_unproven',
   // "We could not find out." Distinct from INVALID on purpose: INVALID means
   // Brave rejected the token, UNREACHABLE means nobody answered. Only the
   // first is a fact about the key, and only the first is ever cached.
@@ -54,6 +61,8 @@ const CODE_FOR = {
   [GATE.INVALID]: 'BraveKeyInvalid',
   // Same BraveKey* family, so a caller matching /^BraveKey/ still recognises it.
   [GATE.UNREACHABLE]: 'BraveKeyUnverified',
+  // Same BraveKey* family, so a caller matching /^BraveKey/ still recognises it.
+  [GATE.PRESENT_UNPROVEN]: 'BraveKeyUnproven',
 };
 
 export class GateError extends Error {
@@ -102,8 +111,14 @@ function burnedIndexes(p) {
  * or an unattributed status from a captive portal or a corporate proxy — is
  * evidence about the path to Brave. Whitelist, not blacklist: an unknown
  * failure kind must not be able to convict a working key.
+ *
+ * Exported because this is THE definition, shared with `keys add`
+ * (src/lib/keys-cmd.mjs imports it); two copies of "is this key bad?" were
+ * two ways to condemn a working key. keys-cmd layers its own
+ * DECIDED_WITHOUT_A_REQUEST on top for the two kinds it decides before any
+ * request leaves the machine.
  */
-function provesKeyBad(r) {
+export function provesKeyBad(r) {
   return !!r && r.valid === false && r.kind === 'auth';
 }
 
@@ -168,14 +183,22 @@ export function gateStatus(state, provider = SEARCH_PROVIDER) {
  * @param {object} [opts]
  * @param {boolean} [opts.allowLive=true]  set false for offline callers (doctor --offline)
  * @param {boolean} [opts.persist=true]    write the cached verdict back to keys.json
- * @returns {Promise<{verdict, index, detail}>}  verdict READY | INVALID | UNREACHABLE
- *   (or whatever gateStatus already decided offline)
+ * @returns {Promise<{verdict, index, detail}>}  verdict READY | INVALID | UNREACHABLE,
+ *   or PRESENT_UNPROVEN when allowLive:false met a never-validated key
+ *   (whatever gateStatus already decided offline passes through unchanged)
  */
 export async function resolveGate(state, provider = SEARCH_PROVIDER, opts = {}) {
   const { allowLive = true, persist = true } = opts;
   let status = gateStatus(state, provider);
   if (status.verdict !== GATE.UNVALIDATED) return status;
-  if (!allowLive) return { ...status, verdict: GATE.READY, detail: 'presence only (offline check)' };
+  // An offline caller that forbids the live probe is told the TRUTH: the key
+  // is present but unproven. It used to be handed GATE.READY — presence spoken
+  // with the same word as proof — which let the hard stop pass on a key nobody
+  // ever checked. PRESENT_UNPROVEN is not READY, so assertProviderReady
+  // refuses it (exit 78, with a fix that says "run it online; the probe is
+  // free"). Being wrong this way costs one free re-probe on the next run;
+  // being wrong the old way let a garbage key sail through an offline gate.
+  if (!allowLive) return { ...status, verdict: GATE.PRESENT_UNPROVEN, detail: 'key present but never validated (offline check)' };
 
   const adapter = getProvider(provider);
   if (!adapter || typeof adapter.validate !== 'function') {
@@ -262,6 +285,7 @@ export function formatGate(verdict, detail, provider = SEARCH_PROVIDER) {
     [GATE.COOLING]: `every ${label} key is rate-limited right now.`,
     [GATE.INVALID]: `the configured ${label} key was rejected by the API.`,
     [GATE.UNREACHABLE]: `surf could not reach ${label} to check the key.`,
+    [GATE.PRESENT_UNPROVEN]: `the configured ${label} key is present but has never been validated.`,
   }[verdict] || `no usable ${label} key.`;
 
   const fix = {
@@ -298,6 +322,14 @@ export function formatGate(verdict, detail, provider = SEARCH_PROVIDER) {
       `     or wait out the ${label} outage, then re-run the same command.`,
       `     surf doctor   — re-checks the gate without spending a search.`,
       `Do NOT remove the key on account of this message. It was never judged.`,
+    ],
+    [GATE.PRESENT_UNPROVEN]: [
+      `An offline check forbade the one free probe that would settle it: the`,
+      `key exists on this machine, but nothing has proven ${label} accepts it.`,
+      `Fix: re-run the same command WITHOUT the offline flag (or: surf doctor),`,
+      `     and the gate proves the key for free — a refused probe is not billed.`,
+      `Do NOT remove the key on account of this message. It was never judged.`,
+      signup ? `Get a key: ${signup}` : '',
     ],
   }[verdict] || [];
 
