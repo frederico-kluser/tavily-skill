@@ -256,6 +256,27 @@ export class Frontier {
   }
 
   /**
+   * Re-open a query key after its search FAILED.
+   *
+   * A wave node is popped before its search runs; if the search then fails (a
+   * transient 500, a quota hiccup), the node is gone and its key sits in
+   * `admittedKeys` — so the analyst re-proposing the identical query is refused
+   * as a "duplicate of a query already admitted", even though the query never
+   * produced a single result. Only a search that SUCCEEDED may bar its key for
+   * the rest of the run, so a failure lifts the bar. The audit sets (`seen`,
+   * `rejected`) are NOT touched: the attempt is still part of the run's
+   * history, and only `admittedKeys` is a bar (see admit/#reject).
+   *
+   * Idempotent: forgetting a key that is not barred, or that never existed,
+   * changes nothing. Returns true when a bar was actually lifted.
+   */
+  forget(q) {
+    const key = queryKey(q);
+    if (!key) return false;
+    return this.admittedKeys.delete(key);
+  }
+
+  /**
    * Take the next wave.
    *
    * `width` is the simultaneity ceiling (--sub-agents) and is never exceeded.

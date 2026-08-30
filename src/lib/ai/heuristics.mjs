@@ -37,7 +37,30 @@ export function keywordize(text, max = 12) {
  * and known problems.
  */
 export function heuristicPlan(ctx, { maxQueries = 6 } = {}) {
-  const core = keywordize(ctx.question) || String(ctx.question || '').slice(0, 200);
+  // The template below is only meaningful when there IS a subject. An empty
+  // question used to fire it anyway — three real, billed Brave requests with
+  // no subject at all: "official documentation", "2026 latest version
+  // changelog", "limitations problems issues". The plan keeps its full shape
+  // (the orchestrator reads restated_objective/sub_questions/success_criteria)
+  // but emits no queries.
+  const raw = String(ctx.question || '').trim();
+  if (!raw) {
+    return {
+      restated_objective: ctx.goal || '',
+      sub_questions: [
+        { id: 'sq1', question: '', why: 'the question as asked' },
+        { id: 'sq2', question: 'current state, versions and practical usage', why: 'agents need exact, current strings' },
+        { id: 'sq3', question: 'limitations, alternatives and known problems', why: 'avoids a confident wrong recommendation' },
+      ],
+      success_criteria: [
+        'the question is answered with at least one cited source',
+        'anything still unknown is stated explicitly',
+      ],
+      queries: [],
+      _degraded: true,
+    };
+  }
+  const core = keywordize(ctx.question) || raw.slice(0, 200);
   const goalCore = ctx.goal ? keywordize(ctx.goal, 8) : '';
   const year = (ctx.today || '').slice(0, 4);
 
@@ -51,9 +74,14 @@ export function heuristicPlan(ctx, { maxQueries = 6 } = {}) {
     { q: `${core} best practices example`, category: 'code', sub: 'sq2' },
   ].filter(Boolean);
 
+  // The budget is checked BEFORE the push. maxQueries 0 used to emit one query
+  // anyway (the cap was consulted after the fact, so 0 and 1 were the same
+  // budget) — zero means zero.
+  const cap = Number.isFinite(Number(maxQueries)) ? Math.max(0, Math.floor(Number(maxQueries))) : 6;
   const seen = new Set();
   const queries = [];
   for (const c of candidates) {
+    if (queries.length >= cap) break;
     const key = c.q.toLowerCase().replace(/\s+/g, ' ').trim();
     if (!key || seen.has(key)) continue;
     seen.add(key);
@@ -66,7 +94,6 @@ export function heuristicPlan(ctx, { maxQueries = 6 } = {}) {
       // candidates are the more literal readings of the question, so they lead.
       priority: Math.max(0.3, 0.9 - queries.length * 0.05),
     });
-    if (queries.length >= maxQueries) break;
   }
 
   return {

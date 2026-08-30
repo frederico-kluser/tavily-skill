@@ -110,6 +110,18 @@ function resolveNormalBudget(opts, searchFlags, harness) {
  *                         max, aiModel, flags, searchMode }
  *                       `concurrency` is accepted as a legacy alias of subAgents.
  */
+/**
+ * A numeric knob with a default. The distinction that matters: an ABSENT knob
+ * is the default; a PRESENT zero is a number the caller chose — it clamps
+ * downstream like any other out-of-range value instead of being silently
+ * replaced by the default.
+ */
+function knob(v, def) {
+  if (v === undefined || v === null || v === '') return def;
+  const n = Number(v);
+  return Number.isFinite(n) ? Math.floor(n) : def;
+}
+
 export async function runSurfAi(ctx, opts = {}) {
   const mode = MODES.includes(opts.mode) ? opts.mode : 'normal';
   const d = DEFAULTS[mode];
@@ -119,20 +131,23 @@ export async function runSurfAi(ctx, opts = {}) {
   // the legacy alias and loses to it. Two independent knobs would multiply:
   // 10 sub-agents each running 8 concurrent searches is 80 requests at once,
   // against a plan that may allow one per second.
-  const subAgents = clamp(
-    Math.floor(Number(opts.subAgents ?? opts.concurrency) || d.subAgents),
-    1, MAX_SUB_AGENTS,
-  );
+  //
+  // A knob the caller explicitly set to a NUMBER is honoured — including zero,
+  // which then clamps to the minimum like any other out-of-range value.
+  // `Number(x) || default` silently turned 0 into the DEFAULT: asking for
+  // subAgents:0 / maxDepth:0 / maxQueries:0 gave back 10/2/10, the opposite of
+  // what was asked, with no warning.
+  const subAgents = clamp(knob(opts.subAgents ?? opts.concurrency, d.subAgents), 1, MAX_SUB_AGENTS);
   // The wave can never be wider than the query budget, so the query budget must
   // not be the thing that silently shrinks a requested fan-out.
   const maxQueries = Math.max(
-    clamp(Math.floor(Number(opts.maxQueries) || d.maxQueries), 1, 40),
+    clamp(knob(opts.maxQueries, d.maxQueries), 1, 40),
     subAgents,
   );
   const maxRounds = mode === 'normal'
     ? 1
-    : clamp(Math.floor(Number(opts.maxRounds) || d.maxRounds), 1, 50);
-  const maxDepth = clamp(Math.floor(Number(opts.maxDepth) || d.maxDepth), 1, 6);
+    : clamp(knob(opts.maxRounds, d.maxRounds), 1, 50);
+  const maxDepth = clamp(knob(opts.maxDepth, d.maxDepth), 1, 6);
   // Distinguish "the user asked for N results" from "we defaulted to N". Only
   // an explicit --max may override the tier implied by --search-mode; otherwise
   // --search-mode was inert, because a defaulted max always won.
@@ -331,6 +346,12 @@ export async function runSurfAi(ctx, opts = {}) {
       } else {
         ledger.addFailure(round, node, (r && r.error) || new Error('unknown error'));
         node.status = 'failed';
+        // A FAILED search must not bar its own query for the rest of the run:
+        // popWave already removed the node, and without this the analyst
+        // re-proposing the identical query was refused as "duplicate of a query
+        // already admitted" — even though the query never produced a single
+        // result. Only a search that SUCCEEDED bars its key (admittedKeys).
+        frontier.forget(node.q);
       }
     });
 
@@ -375,7 +396,19 @@ export async function runSurfAi(ctx, opts = {}) {
           round,
           maxRounds,
           maxNextQueries: maxQueries,
-          rejected: frontier.rejected,
+          // The analyst also hears about close requests that were IGNORED.
+          // Closing a sub-question that never existed is recorded as a phantom
+          // close (see Frontier.closeBranch) and published in the frontier
+          // snapshot, but an analyst that never hears about it keeps proposing
+          // the hallucinated id every wave. Riding the rejected list keeps the
+          // audit trail in the same shape the analyst already reads.
+          rejected: [
+            ...frontier.rejected,
+            ...[...frontier.phantomClosed].map(sub => ({
+              q: `(close requested for branch '${sub}')`,
+              reason: 'that sub-question never existed, so the close was ignored',
+            })),
+          ],
           openBranches: frontier.openBranches,
           closedBranches: [...frontier.closed],
         }),
@@ -576,11 +609,42 @@ export async function runSurfAi(ctx, opts = {}) {
  * --search-mode fast/normal/slow produce byte-identical requests.
  */
 async function runOneSearch(node, { state, searchFlags, perSearchMax, searchMode, userMax }) {
+  // kebab-case CLI flag -> the argument name the Brave adapter reads. The
+  // adapter's own allowlist lives in providers/brave.mjs; this is the same
+  // mapping bin/surf-research-skill.mjs buildSearchArgs() uses for the `search`
+  // verb — the surf-ai path only forwarded query/mode/max, so --domains,
+  // --exclude, --time, --country, --safesearch, --goggles and --result-filter
+  // were accepted, silently dropped, and the user paid for the web at large
+  // while --help promised "all of these now actually reach Brave".
+  // (mode/max are deliberately absent: they are the searchMode/userMax knobs
+  // handled below, and double-wiring them would fight the tier logic.)
+  const SEARCH_ARG_FLAGS = {
+    domains: 'domains',
+    exclude: 'excludeDomains',
+    time: 'time',
+    freshness: 'freshness',
+    country: 'country',
+    safesearch: 'safesearch',
+    goggles: 'goggles',
+    'result-filter': 'resultFilter',
+    offset: 'offset',
+    topic: 'topic',
+    'start-date': 'startDate',
+    'end-date': 'endDate',
+    'search-lang': 'searchLang',
+    'ui-lang': 'uiLang',
+  };
   const args = {
     query: node.q,
     mode: searchMode || undefined,
     ...(userMax != null ? { max: userMax } : (searchMode ? {} : { max: perSearchMax })),
   };
+  // Search flags the caller actually passed reach the adapter. An empty string
+  // ("--domains=" with nothing after the =) is not a value.
+  for (const [flag, arg] of Object.entries(SEARCH_ARG_FLAGS)) {
+    const v = searchFlags[flag];
+    if (v !== undefined && v !== null && v !== '') args[arg] = v;
+  }
   return dispatch('search', args, searchFlags, { state });
 }
 
