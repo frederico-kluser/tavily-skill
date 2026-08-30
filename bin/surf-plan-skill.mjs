@@ -8,7 +8,9 @@ import { resolvePlansDir, DEFAULT_HOME_PLANS } from '../src/plan/plans-dir.mjs';
 import { listPlans, readPlan, newPlanStub } from '../src/plan/plan-file.mjs';
 import { slugify } from '../src/plan/slug.mjs';
 import { checkSurfSkill } from '../src/lib/check-surf-skill.mjs';
+import { formatGate, EXIT_CONFIG } from '../src/lib/preflight.mjs';
 
+// NOTE: drifted from package.json (8.0.1) — unified separately; see package.json.
 const VERSION = '8.0.0';
 
 const HELP = `surf-plan-skill — research-grounded execution planning skill
@@ -127,11 +129,46 @@ async function cmdDoctor() {
     if (surf.keyCounts) {
       const k = surf.keyCounts;
       out(`  brave keys:    ${k.brave} configured, ${k.braveUsable} usable`);
+      // The verdict itself, always — a count cannot tell "never validated"
+      // apart from "validated and good", and both print "1 usable".
+      if (surf.gate) out(`  gate verdict:  ${surf.gate.verdict} — ${surf.gate.detail}`);
+
+      // WHY THIS PRINTS formatGate() AND NOT A SENTENCE OF ITS OWN
+      // ---------------------------------------------------------
+      // It used to own two sentences, chosen by `k.brave === 0`: no key, or
+      // "Every Brave key is burned. Run: keys reset". That second branch was
+      // the ELSE of a single test, so it spoke for every non-empty ring —
+      // and once braveUsable became the gate's verdict rather than a
+      // subtraction, "not usable" started covering COOLING and INVALID too.
+      // A user whose key was merely sitting out a 429 read that it was burned
+      // and ran a `keys reset` that resets nothing relevant; a user whose key
+      // was rejected by Brave was told to reset before being told the verdict
+      // is cached. The exit code was right and the prose was wrong, which is
+      // worse than being wrong twice: the number says "stop" and the text
+      // sends you somewhere useless.
+      //
+      // So this file no longer has an opinion about what to tell you either.
+      // formatGate() is the same text `assertProviderReady()` throws before
+      // every search, so the doctor and the failing command cannot disagree —
+      // including for verdicts this bin has never heard of. UNREACHABLE (the
+      // probe got no answer, nothing was cached) is the case that proves the
+      // point: its canonical text ends with "Do NOT remove the key on account
+      // of this message", advice no local `switch` here would have invented.
       if (k.braveUsable === 0) {
-        out(k.brave === 0
-          ? `\n⚠ No Brave key. Every research command exits 78. Run: surf-research-skill setup`
-          : `\n⚠ Every Brave key is burned. Run: surf-research-skill keys reset --provider brave`);
-        process.exitCode = 78;
+        out('');
+        if (surf.gate && surf.gate.verdict) {
+          for (const line of formatGate(surf.gate.verdict, surf.gate.detail).text.split('\n')) {
+            out(line ? `  ${line}` : '');
+          }
+        } else {
+          // Only reachable against a check-surf-skill build that predates
+          // `gate`. Naming a verdict we do not have is the exact bug above,
+          // so say only what is known and hand off to the command that can
+          // decide.
+          out(`  ⚠ No usable Brave key, and this build cannot report which verdict`);
+          out(`    the gate reached. Run: surf doctor`);
+        }
+        process.exitCode = EXIT_CONFIG;
       }
     }
   } else {
