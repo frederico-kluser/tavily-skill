@@ -308,10 +308,58 @@ bug('BUG-06', 'HIGH', 'src/lib/providers/brave.mjs:222-226',
   resolveFreshness({ startDate: '2026-06-30', endDate: '2026-01-01' }) === '2026-06-30to2026-01-01',
   JSON.stringify(resolveFreshness({ startDate: '2026-06-30', endDate: '2026-01-01' })));
 
-bug('BUG-07', 'MED', 'src/lib/providers/brave.mjs:233',
-  'a date the regex cannot parse is DROPPED IN SILENCE — no warning, no error — and the search runs unfiltered. --start-date and --end-date are the only search flags with no assertEnum/numericFlag guard at the CLI (bin/surf-research-skill.mjs:199-203), so the adapter is the only line of defence and it declines to defend',
-  resolveFreshness({ startDate: '01/01/2026' }) === undefined && resolveFreshness({ startDate: '12026-01-01' }) === undefined,
-  `--start-date 01/01/2026 → undefined; --start-date 12026-01-01 (5-digit year) → undefined`);
+// The recusal half of BUG-07, frozen as CONTRACT (the old bug() condition
+// asserted exactly this and could only flip if the adapter started ACCEPTING
+// an ambiguous date or a 5-digit year — which contradicts BUG-05 and would
+// reintroduce the silently-wrong bound this block exists to prevent).
+eq('an ambiguous date (01/01/2026) is refused, never forwarded as a bound',
+  resolveFreshness({ startDate: '01/01/2026' }), undefined);
+eq('a 5-digit year (12026-01-01) is refused too',
+  resolveFreshness({ startDate: '12026-01-01' }), undefined);
+{
+  // BUG-07 measures S I L E N C E. The 2026-08-30 register says the old
+  // condition was wrong: `resolveFreshness(...) === undefined` is the CORRECT
+  // behaviour (recusal), asserted as if it were the defect. The description's
+  // actual accusation is the drop without a word: the user asks for a bound,
+  // the bound is thrown away, and the search runs unfiltered while they pay
+  // for a filtered one. The condition below therefore measures that no bound
+  // is discarded without the user being told the search will run unfiltered.
+  //
+  // Hypothetical implementations that would flip this to FIXED, written
+  // first, per the wave-2 rule (a bug() condition must be able to fail):
+  //   1. resolveFreshness/isoDay call progress.warn naming the dropped bound
+  //      and saying the search will run unfiltered — the shipped fix, e.g.
+  //      `brave: --start-date "01/01/2026" is not YYYY-MM-DD — dropped (the
+  //      search ran unfiltered on that bound)`;
+  //   2. resolveFreshness throws on an unparseable bound (usage error; the
+  //      CLI exits 2 and nothing runs unfiltered). The throw is caught here
+  //      ON PURPOSE: either fix is the opposite of silence, and the suite
+  //      must survive both (this block doubles as the class-2 guard the
+  //      register asks for — a module-level `bug(resolveFreshness(...))`
+  //      would die if a future fix switched to throwing).
+  // Any implementation that drops a bound without either side effect
+  // reproduces the bug.
+  const warns = [];
+  const { progress } = await import(LIB('progress.mjs'));
+  const origWarn = progress.warn;
+  progress.warn = (m) => warns.push(String(m));
+  let threw = false;
+  try {
+    resolveFreshness({ startDate: '01/01/2026' });
+    resolveFreshness({ startDate: '12026-01-01' });
+    resolveFreshness({ endDate: '31/12/2026' });
+    resolveFreshness({ freshness: 'pz' });
+  } catch (e) {
+    threw = true;
+  } finally {
+    progress.warn = origWarn;
+  }
+  const announced = threw || warns.some((m) => /unfiltered/i.test(m));
+  bug('BUG-07', 'MED', 'src/lib/providers/brave.mjs:233',
+    'a date the regex cannot parse is DROPPED IN SILENCE — no warning, no error — and the search runs unfiltered. --start-date and --end-date are the only search flags with no assertEnum/numericFlag guard at the CLI (bin/surf-research-skill.mjs:199-203), so the adapter is the only line of defence and it declines to defend',
+    !announced,
+    `dropping 4 unparseable bounds produced ${warns.length} warning(s)${threw ? ' and a throw' : ''}: ${JSON.stringify(warns)}`);
+}
 
 bug('BUG-08', 'LOW', 'src/lib/providers/brave.mjs:219',
   'an explicit --freshness is trusted verbatim and never checked against pd|pw|pm|py|RANGE',
