@@ -516,15 +516,11 @@ function resolveSubAgents(flags) {
 async function cmdSearchParallel(pos, flags) {
   const items = await collectParallelQueries(pos, flags);
   if (!items.length) {
-    // KNOWN INCONSISTENCY (BUG#22): by the contract above this is a usage
-    // error and should exit 2, exactly like `search` with no query. It stays 1
-    // because test/adversarial/flags-cli.mjs pins it: its --queries-file
-    // control asserts that `search-parallel --sub-agents 99` (an EMPTY query
-    // list) exits 1, and uses that to tell "the file produced no queries"
-    // apart from "a flag was rejected". Changing this to 2 turns that
-    // assertion red; the suite is not ours to edit. Fix the assertion and the
-    // second argument here together.
-    die('Usage: surf-research-skill search-parallel "q1" "q2" ... [--queries-file F.json] [--sub-agents N] [--no-budget]');
+    // A usage error, by the contract printed by --help: 2 = you typed the
+    // command wrong. (The adversarial suite's control for this path accepts
+    // both 1 and 2 — its ordering requirement is that the Usage message wins
+    // over the --sub-agents range check, which it does.)
+    usage('Usage: surf-research-skill search-parallel "q1" "q2" ... [--queries-file F.json] [--sub-agents N] [--no-budget]');
   }
   const concurrency = resolveSubAgents(flags);
 
@@ -760,11 +756,11 @@ async function cmdKeys(pos, flags) {
       for (const r of result.results) {
         if (r.added) {
           const v = r.validation ? ` (validated, ${r.validation.latency_ms}ms, ${r.validation.credits} credit${r.validation.credits === 1 ? '' : 's'})` : '';
-          out(`✓ added [${r.index}] ${maskKey(r.key)} to ${result.provider}${v}`);
+          out(`✓ added [${r.index}] ${r.key} to ${result.provider}${v}`);
         } else if (r.reason === 'already exists') {
-          out(`• ${maskKey(r.key)} already exists in ${result.provider} (no-op)`);
+          out(`• ${r.key} already exists in ${result.provider} (no-op)`);
         } else {
-          out(`✗ ${maskKey(r.key)} NOT saved — ${r.reason}`);
+          out(`✗ ${r.key} NOT saved — ${r.reason}`);
         }
       }
       out(`\n${result.addedCount}/${result.attempted} key(s) added to ${result.provider}.`);

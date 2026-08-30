@@ -30,12 +30,18 @@ const str = (v) => (typeof v === 'string' && v.trim() ? v.trim() : undefined);
  */
 export async function buildBrief(pos, flags) {
   let brief = {};
-  if (flags['brief-file']) {
+  const briefFile = flags['brief-file'];
+  if (briefFile !== undefined && briefFile !== null) {
+    // `--brief-file=` (empty value) must point at the FLAG, not at the
+    // missing question — the value was typed wrong, the question was not.
+    if (typeof briefFile !== 'string' || !briefFile.trim()) {
+      throw new AiCliError('--brief-file needs a value (a path to a JSON file)');
+    }
     let txt;
     try {
-      txt = await readFile(flags['brief-file'], 'utf8');
+      txt = await readFile(briefFile, 'utf8');
     } catch (e) {
-      throw new AiCliError(`--brief-file: cannot read ${flags['brief-file']}: ${e.message}`);
+      throw new AiCliError(`--brief-file: cannot read ${briefFile}: ${e.message}`);
     }
     let parsed;
     try {
@@ -75,25 +81,41 @@ export async function buildBrief(pos, flags) {
  */
 export async function runAiCommand({ pos, flags, mode }) {
   const resolvedMode = mode || (flags.mode === 'unlimit' ? 'unlimit' : 'normal');
-  if (!mode && flags.mode && flags.mode !== 'normal' && flags.mode !== 'unlimit') {
-    throw new AiCliError(`--mode must be 'normal' or 'unlimit' (got '${flags.mode}')`);
-  }
 
-  // `--mode` means the RUN mode here, but the standalone bins fix the run mode
-  // themselves — so on those, `--mode fast|normal|slow` was parsed, ignored, and
-  // silently discarded. Treat it as the tier flag it obviously meant, unless the
-  // user also passed --search-mode, which always wins.
+  // `--mode` carries two meanings, and the three entry points must agree on
+  // the tier reading (this file's header promises they can never drift):
+  //   · fast|normal|slow are result-tier names — an alias for --search-mode,
+  //     on every entry point, whenever they cannot also be a run-mode name;
+  //   · normal|unlimit are run-mode names. The standalone bins fix the run
+  //     mode themselves (a mismatching --mode is a contradiction), while the
+  //     surf-ai verb reads it as its run-mode selector.
+  // An explicit --search-mode always wins over the alias.
   let searchMode = flags['search-mode'];
-  if (mode && typeof flags.mode === 'string' && SEARCH_MODES.includes(flags.mode)) {
-    if (!searchMode) {
-      searchMode = flags.mode;
-      progress.info(`surf-ai: read --mode ${flags.mode} as --search-mode (this binary fixes the run mode to '${mode}')`);
+  if (typeof flags.mode === 'string') {
+    const isTier = SEARCH_MODES.includes(flags.mode); // fast|normal|slow
+    if (mode) {
+      // Standalone bin: the run mode is fixed, so every tier name is an alias.
+      if (isTier) {
+        if (!searchMode) {
+          searchMode = flags.mode;
+          progress.info(`surf-ai: read --mode ${flags.mode} as --search-mode (this binary fixes the run mode to '${mode}')`);
+        }
+      } else if (flags.mode !== mode) {
+        throw new AiCliError(
+          `--mode '${flags.mode}' contradicts this command, which always runs in '${mode}' mode. ` +
+          `Did you mean --search-mode ${SEARCH_MODES.join('|')}?`,
+        );
+      }
+    } else if (isTier && flags.mode !== 'normal') {
+      // surf-ai verb: 'normal' is a run-mode name here, so only fast|slow can
+      // be the tier alias.
+      if (!searchMode) {
+        searchMode = flags.mode;
+        progress.info(`surf-ai: read --mode ${flags.mode} as --search-mode (run mode stays 'normal'); pass --mode unlimit to keep going`);
+      }
+    } else if (flags.mode !== 'normal' && flags.mode !== 'unlimit') {
+      throw new AiCliError(`--mode must be one of: fast, slow, normal, unlimit (got '${flags.mode}')`);
     }
-  } else if (mode && typeof flags.mode === 'string' && flags.mode !== mode) {
-    throw new AiCliError(
-      `--mode '${flags.mode}' contradicts this command, which always runs in '${mode}' mode. ` +
-      `Did you mean --search-mode ${SEARCH_MODES.join('|')}?`,
-    );
   }
   assertEnum('--search-mode', searchMode, SEARCH_MODES);
 
@@ -119,7 +141,7 @@ export async function runAiCommand({ pos, flags, mode }) {
     max: numericFlag(flags.max, { name: '--max', min: 1, max: 20, fallback: undefined }),
     aiModel: flags['ai-model'],
     searchMode,
-    budgetMs: flags['budget-ms'],
+    budgetMs: numericFlag(flags['budget-ms'], { name: '--budget-ms', min: 0, fallback: undefined }),
     flags,
   });
 

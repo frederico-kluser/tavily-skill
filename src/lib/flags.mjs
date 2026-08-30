@@ -93,11 +93,17 @@ export function parseFlags(argv) {
     }
 
     // `--flag=value` — split first, then coerce, so `--json=false` disables
-    // rather than enabling a boolean switch.
+    // rather than enabling a boolean switch. The `=` form must not bypass the
+    // missing-value guard below: `--sub-agents=` and `--sub-agents` are the
+    // same typo and must cost the same, instead of one silently becoming the
+    // default while the other is a hard error.
     const eq = a.indexOf('=');
     if (eq > 2) {
       const k = a.slice(2, eq);
       const v = a.slice(eq + 1);
+      if (VALUED_FLAGS.has(k) && v === '') {
+        throw new FlagError(`--${k} needs a value (e.g. --${k}=<value>)`);
+      }
       flags[k] = BOOLEAN_FLAGS.has(k) ? (v !== 'false' && v !== '0' && v !== '') : v;
       continue;
     }
@@ -154,16 +160,24 @@ export function numericFlag(value, { name, min = 1, max = Number.MAX_SAFE_INTEGE
   return floored;
 }
 
-/** Clamp helper. Returns `fallback` for non-finite input instead of NaN. */
-export function clamp(n, min, max) {
+/**
+ * Clamp helper. Returns `fallback` for non-finite input instead of NaN.
+ * `fallback` may be omitted only when the input is guaranteed finite.
+ */
+export function clamp(n, min, max, fallback) {
+  if (!Number.isFinite(n)) return fallback;
   return Math.min(Math.max(n, min), max);
 }
 
 /**
  * Coerce to a finite integer inside [min,max], or return `fallback`.
  * This is the guard that stops `--max abc` from serialising as `count=NaN`.
+ * The empty string and null are "absent", not zero: Number('') === 0 and
+ * Number(null) === 0 would otherwise clamp them to `min` instead of falling
+ * back. (Latent callers guard them today; the docstring is the contract.)
  */
 export function intOr(value, { min, max, fallback }) {
+  if (value === '' || value === null || value === undefined) return fallback;
   const n = Number(value);
   if (!Number.isFinite(n)) return fallback;
   const floored = Math.floor(n);
@@ -181,14 +195,29 @@ export function splitList(s) {
 }
 
 export function trunc(s, n) {
-  if (!s) return '';
+  if (s === undefined || s === null || s === '') return '';
   return s.length > n ? s.slice(0, n) + '…' : s;
 }
 
-export function flat(v) {
+/**
+ * Flatten an error-ish value to a string without ever throwing — a circular
+ * error object is exactly the input this helper exists for. `seen` guards
+ * self-referencing message/error/detail chains; JSON.stringify is the last
+ * resort and is wrapped because it throws on cycles.
+ */
+export function flat(v, seen) {
   if (v == null) return '';
   if (typeof v === 'string') return v;
-  return flat(v.message) || flat(v.error) || flat(v.detail) || JSON.stringify(v);
+  const s = seen || new Set();
+  if (typeof v === 'object' && s.has(v)) return '[circular]';
+  if (typeof v === 'object') s.add(v);
+  const nested = flat(v.message, s) || flat(v.error, s) || flat(v.detail, s);
+  if (nested) return nested;
+  try {
+    return JSON.stringify(v);
+  } catch {
+    return String(v);
+  }
 }
 
 // Below this length the head+tail slices below overlap or all but cover the

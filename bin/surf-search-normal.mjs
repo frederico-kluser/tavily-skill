@@ -83,11 +83,23 @@ for (const sig of ['SIGTERM', 'SIGINT']) {
 
 const [, , ...argv] = process.argv;
 
-if (argv[0] === '--help' || argv[0] === '-h' || argv.length === 0) {
+if (argv.length === 0) {
   process.stdout.write(HELP);
-  process.exit(argv.length === 0 ? 2 : 0);
+  process.exit(2);
 }
-if (argv[0] === '--version' || argv[0] === '-v') {
+
+// --help/-h/--version are recognised ANYWHERE in the option head, not only at
+// argv[0]: `--json --help` must print help regardless of argument order. This
+// runs BEFORE parseFlags and BEFORE the Brave key gate, so asking for help
+// never requires a working configuration. The `--` end-of-options separator
+// still shields a query that merely reads like a flag.
+const optHeadLen = argv.indexOf('--') === -1 ? argv.length : argv.indexOf('--');
+const optHead = argv.slice(0, optHeadLen);
+if (optHead.includes('--help') || optHead.includes('-h')) {
+  process.stdout.write(HELP);
+  process.exit(0);
+}
+if (optHead.includes('--version') || optHead.includes('-v')) {
   process.stdout.write(VERSION + '\n');
   process.exit(0);
 }
