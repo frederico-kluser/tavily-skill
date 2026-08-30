@@ -17,8 +17,15 @@
 // dedupe keeps separating them. Pure tracking params (utm_*, gclid, fbclid,
 // mc_*) are still stripped: the page they point at is the same page.
 const STRIP_PARAMS = [
-  'utm_source', 'utm_medium', 'utm_campaign', 'utm_term', 'utm_content',
-  'gclid', 'fbclid', 'mc_cid', 'mc_eid',
+  "utm_source",
+  "utm_medium",
+  "utm_campaign",
+  "utm_term",
+  "utm_content",
+  "gclid",
+  "fbclid",
+  "mc_cid",
+  "mc_eid",
 ];
 
 /**
@@ -48,12 +55,12 @@ function isCitableUrl(url) {
  * every url passes through, rather than at each of the places that print one.
  */
 export function canonicalUrl(raw) {
-  if (typeof raw !== 'string' || !raw.trim()) return '';
+  if (typeof raw !== "string" || !raw.trim()) return "";
   try {
     const u = new URL(raw.trim());
-    u.username = '';
-    u.password = '';
-    u.hash = '';
+    u.username = "";
+    u.password = "";
+    u.hash = "";
     for (const p of STRIP_PARAMS) u.searchParams.delete(p);
     let s = u.toString();
     // BUG-15: strip EVERY trailing slash, not one. One slice made the function
@@ -62,15 +69,15 @@ export function canonicalUrl(raw) {
     // times it had already been through here, and could be indexed twice.
     // The documented gap (a trailing slash before a query string is NOT
     // normalised) survives: `s` does not end with `/` in that case.
-    if (u.pathname !== '/') {
+    if (u.pathname !== "/") {
       const hadTrailing = /\/$/.test(s);
-      s = s.replace(/\/+$/, '');
+      s = s.replace(/\/+$/, "");
       // Root with redundant slashes (https://a.com//) strips down to an empty
       // path; give the root back its canonical slash — the pinned form
       // canonicalUrl('https://a.com') already serialises to. Only when the
       // string itself ended in '/', so a trailing slash before a query string
       // (https://a.com//?q=1) is still left untouched (documented gap).
-      if (hadTrailing && u.pathname.replace(/\/+$/, '') === '') return s + '/';
+      if (hadTrailing && u.pathname.replace(/\/+$/, "") === "") return s + "/";
     }
     return s;
   } catch {
@@ -79,16 +86,20 @@ export function canonicalUrl(raw) {
 }
 
 function clean(s, n) {
-  if (typeof s !== 'string') return '';
+  if (typeof s !== "string") return "";
   // Collapse the whitespace soup that extracted page text usually is; it wastes
   // tokens and hurts nothing to normalize.
-  const t = s.replace(/\r/g, '').replace(/[ \t]+/g, ' ').replace(/\n{3,}/g, '\n\n').trim();
-  return t.length > n ? t.slice(0, n) + '…' : t;
+  const t = s
+    .replace(/\r/g, "")
+    .replace(/[ \t]+/g, " ")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+  return t.length > n ? t.slice(0, n) + "…" : t;
 }
 
 export class Ledger {
   constructor() {
-    this.rows = [];          // one per executed query
+    this.rows = []; // one per executed query
     this.sourceIndex = new Map(); // canonical url -> { n, url, title, date, providers:Set }
     this.seenQueries = new Set();
   }
@@ -111,25 +122,33 @@ export class Ledger {
    * sibling query that DID succeed.
    */
   addSuccess(round, item, envelope) {
-    const env = (envelope && typeof envelope === 'object') ? envelope : {};
-    const data = (env.data && typeof env.data === 'object') ? env.data : {};
+    const env = envelope && typeof envelope === "object" ? envelope : {};
+    const data = env.data && typeof env.data === "object" ? env.data : {};
     const results = Array.isArray(data.results) ? data.results : [];
-    const kept = results.filter(r => r && typeof r === 'object').map(r => {
-      const url = canonicalUrl(r.url);
-      const entry = this.#indexSource(url, r);
-      return {
-        n: entry ? entry.n : null,
-        url,
-        title: r.title || url,
-        date: r.published_date || null,
-        score: r.score,
-        content: r.content || r.raw_content || '',
-      };
-    });
+    const kept = results
+      .filter((r) => r && typeof r === "object")
+      .map((r) => {
+        const url = canonicalUrl(r.url);
+        const entry = this.#indexSource(url, r);
+        return {
+          n: entry ? entry.n : null,
+          url,
+          title: r.title || url,
+          date: r.published_date || null,
+          score: r.score,
+          content: r.content || r.raw_content || "",
+        };
+      });
     this.rows.push({
-      round, id: item.id, sub: item.sub, category: item.category || null,
-      parent: item.parent || null, depth: item.depth ?? 0, kind: item.kind || 'breadth',
-      query: item.q, ok: true,
+      round,
+      id: item.id,
+      sub: item.sub,
+      category: item.category || null,
+      parent: item.parent || null,
+      depth: item.depth ?? 0,
+      kind: item.kind || "breadth",
+      query: item.q,
+      ok: true,
       provider: env.provider,
       latency_ms: env.latency_ms,
       credits: (env.usage && env.usage.credits) || 0,
@@ -142,11 +161,17 @@ export class Ledger {
   /** Record a failed search. Failures are rows too — never dropped. */
   addFailure(round, item, error) {
     this.rows.push({
-      round, id: item.id, sub: item.sub, category: item.category || null,
-      parent: item.parent || null, depth: item.depth ?? 0, kind: item.kind || 'breadth',
-      query: item.q, ok: false,
+      round,
+      id: item.id,
+      sub: item.sub,
+      category: item.category || null,
+      parent: item.parent || null,
+      depth: item.depth ?? 0,
+      kind: item.kind || "breadth",
+      query: item.q,
+      ok: false,
       error: {
-        code: (error && (error.code || error.name)) || 'Error',
+        code: (error && (error.code || error.name)) || "Error",
         message: (error && error.message) || String(error),
       },
       results: [],
@@ -173,7 +198,12 @@ export class Ledger {
       return existing;
     }
     if (!isCitableUrl(url)) {
-      const refused = { n: null, url, title: r.title || url, date: r.published_date || null };
+      const refused = {
+        n: null,
+        url,
+        title: r.title || url,
+        date: r.published_date || null,
+      };
       this.sourceIndex.set(url, refused);
       return refused;
     }
@@ -201,14 +231,21 @@ export class Ledger {
     for (const row of this.rows) {
       for (const r of row.results || []) {
         if (row.round < round) earlier.add(r.url);
-        else if (row.round === round && !earlier.has(r.url)) { earlier.add(r.url); count++; }
+        else if (row.round === round && !earlier.has(r.url)) {
+          earlier.add(r.url);
+          count++;
+        }
       }
     }
     return count;
   }
 
-  get okRows() { return this.rows.filter(r => r.ok); }
-  get failedRows() { return this.rows.filter(r => !r.ok); }
+  get okRows() {
+    return this.rows.filter((r) => r.ok);
+  }
+  get failedRows() {
+    return this.rows.filter((r) => !r.ok);
+  }
 
   stats() {
     const credits = this.rows.reduce((s, r) => s + (r.credits || 0), 0);
@@ -232,13 +269,15 @@ export class Ledger {
     const lines = [];
     for (const e of this.sourceIndex.values()) {
       if (e.n === null) continue; // refused host-less form: never a numbered source
-      lines.push(`[${e.n}] ${oneLine(e.title)} — ${e.url}${e.date ? ` (${oneLine(e.date)})` : ''}`);
+      lines.push(
+        `[${e.n}] ${oneLine(e.title)} — ${e.url}${e.date ? ` (${oneLine(e.date)})` : ""}`,
+      );
     }
-    return lines.join('\n') || '(no sources retrieved)';
+    return lines.join("\n") || "(no sources retrieved)";
   }
 
   sourcesList() {
-    return [...this.sourceIndex.values()].filter(e => e.n !== null);
+    return [...this.sourceIndex.values()].filter((e) => e.n !== null);
   }
 
   /**
@@ -250,27 +289,32 @@ export class Ledger {
    * @param {number} [o.maxChars=110000]   hard ceiling on the whole digest
    * @param {number} [o.sinceRound]        only include rows from this round on
    */
-  digest({ perResult = 900, maxResults = 6, maxChars = 110_000, sinceRound = 0 } = {}) {
+  digest({
+    perResult = 900,
+    maxResults = 6,
+    maxChars = 110_000,
+    sinceRound = 0,
+  } = {}) {
     const parts = [];
     let used = 0;
     let truncatedAt = null;
 
-    const rows = this.rows.filter(r => r.round >= sinceRound);
+    const rows = this.rows.filter((r) => r.round >= sinceRound);
     for (const row of rows) {
-      const lineage = `depth ${row.depth ?? 0}${row.parent ? ` · follows [${row.parent}]` : ''} · ${row.kind || 'breadth'}`;
+      const lineage = `depth ${row.depth ?? 0}${row.parent ? ` · follows [${row.parent}]` : ""} · ${row.kind || "breadth"}`;
       const head = row.ok
-        ? `### [${row.id}] ${row.query}\n(sub: ${row.sub || '—'} · ${lineage} · category: ${row.category || '—'} · wave ${row.round})`
-        : `### [${row.id}] ${row.query}\n(sub: ${row.sub || '—'} · ${lineage} · wave ${row.round}) — SEARCH FAILED: ${row.error.code}: ${row.error.message}`;
+        ? `### [${row.id}] ${row.query}\n(sub: ${row.sub || "—"} · ${lineage} · category: ${row.category || "—"} · wave ${row.round})`
+        : `### [${row.id}] ${row.query}\n(sub: ${row.sub || "—"} · ${lineage} · wave ${row.round}) — SEARCH FAILED: ${row.error.code}: ${row.error.message}`;
 
       const body = [];
       if (row.answer) body.push(`Provider answer: ${clean(row.answer, 700)}`);
       for (const r of row.results.slice(0, maxResults)) {
         const snippet = clean(r.content, perResult);
         body.push(
-          `- ${citation(r.n)} ${digestField(r.title)}${r.date ? ` (${digestField(r.date)})` : ''}\n  ${digestField(r.url)}\n  ${snippet || '(no snippet returned)'}`
+          `- ${citation(r.n)} ${digestField(r.title)}${r.date ? ` (${digestField(r.date)})` : ""}\n  ${digestField(r.url)}\n  ${snippet || "(no snippet returned)"}`,
         );
       }
-      const block = `${head}\n${body.join('\n') || '(no results)'}\n`;
+      const block = `${head}\n${body.join("\n") || "(no results)"}\n`;
 
       if (used + block.length > maxChars) {
         // BUG-19: under a budget smaller than the FIRST block, the loop used
@@ -289,12 +333,13 @@ export class Ledger {
       used += block.length;
     }
 
-    let out = parts.join('\n');
+    let out = parts.join("\n");
     if (truncatedAt) {
-      out += `\n(evidence truncated at query ${truncatedAt} to fit the context budget; ` +
-             `${rows.length - parts.length} more quer${rows.length - parts.length === 1 ? 'y' : 'ies'} not shown)`;
+      out +=
+        `\n(evidence truncated at query ${truncatedAt} to fit the context budget; ` +
+        `${rows.length - parts.length} more quer${rows.length - parts.length === 1 ? "y" : "ies"} not shown)`;
     }
-    return out || '(no evidence gathered)';
+    return out || "(no evidence gathered)";
   }
 
   /**
@@ -307,18 +352,22 @@ export class Ledger {
    */
   tableMarkdown() {
     const lines = [
-      '| Wave | Depth | Sub | Query id | Kind | Parent | Status | Top source |',
-      '|---|---|---|---|---|---|---|---|',
+      "| Wave | Depth | Sub | Query id | Kind | Parent | Status | Top source |",
+      "|---|---|---|---|---|---|---|---|",
     ];
     for (const r of this.rows) {
       const first = r.ok ? r.results[0] : null;
-      const top = first ? `${citation(first.n)} ${trunc(first.title, 60)}` : '—';
-      const status = r.ok ? `OK (${r.results.length} hits)` : `FAILED: ${r.error.code}`;
+      const top = first
+        ? `${citation(first.n)} ${trunc(first.title, 60)}`
+        : "—";
+      const status = r.ok
+        ? `OK (${r.results.length} hits)`
+        : `FAILED: ${r.error.code}`;
       lines.push(
-        `| ${r.round} | ${r.depth ?? 0} | ${cell(r.sub || '—')} | ${cell(r.id)} | ${cell(r.kind || 'breadth')} | ${cell(r.parent || '—')} | ${cell(status)} | ${cell(top)} |`
+        `| ${r.round} | ${r.depth ?? 0} | ${cell(r.sub || "—")} | ${cell(r.id)} | ${cell(r.kind || "breadth")} | ${cell(r.parent || "—")} | ${cell(status)} | ${cell(top)} |`,
       );
     }
-    return lines.join('\n');
+    return lines.join("\n");
   }
 
   /** Plain JS object for --json output. */
@@ -332,12 +381,15 @@ export class Ledger {
 }
 
 function normQuery(q) {
-  return String(q || '').toLowerCase().replace(/\s+/g, ' ').trim();
+  return String(q || "")
+    .toLowerCase()
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function trunc(s, n) {
-  const t = String(s || '');
-  return t.length > n ? t.slice(0, n - 1) + '…' : t;
+  const t = String(s || "");
+  return t.length > n ? t.slice(0, n - 1) + "…" : t;
 }
 
 /**
@@ -349,12 +401,14 @@ function trunc(s, n) {
  * there is nothing to cite instead.
  */
 function citation(n) {
-  return Number.isInteger(n) ? `[${n}]` : '(no citable url)';
+  return Number.isInteger(n) ? `[${n}]` : "(no citable url)";
 }
 
 /** Collapse to one line. Titles come from the open web and carry newlines. */
 function oneLine(v) {
-  return String(v == null ? '' : v).replace(/\s+/g, ' ').trim();
+  return String(v == null ? "" : v)
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 /**
@@ -375,13 +429,15 @@ function oneLine(v) {
  */
 const DIGEST_LINE_BREAKS = /[\n\r\u2028\u2029]/;
 function digestField(v) {
-  const s = String(v == null ? '' : v);
+  const s = String(v == null ? "" : v);
   if (!DIGEST_LINE_BREAKS.test(s)) return s;
   return s
-    .replace(/\r\n/g, '[U+000A]')
-    .replace(/[\n\r\u2028\u2029]/g, (m) => (
-      `[U+${m.codePointAt(0).toString(16).toUpperCase().padStart(4, '0')}]`
-    ));
+    .replace(/\r\n/g, "[U+000A]")
+    .replace(
+      /[\n\r\u2028\u2029]/g,
+      (m) =>
+        `[U+${m.codePointAt(0).toString(16).toUpperCase().padStart(4, "0")}]`,
+    );
 }
 
 /**
@@ -393,5 +449,5 @@ function digestField(v) {
  * and leaves no delimiter behind, which is the property this needs.
  */
 function cell(v) {
-  return oneLine(v).replace(/\|/g, '&#124;');
+  return oneLine(v).replace(/\|/g, "&#124;");
 }
