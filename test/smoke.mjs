@@ -59,6 +59,15 @@ if (!process.env.SURF_SMOKE_CHILD) {
       // Pacing is covered in test/brave.mjs; leaving it armed here would add a
       // real second of wall-clock per stubbed search.
       SURF_NO_RATE_LIMIT: '1',
+      // The degraded-orchestrator section proves the run falls back to the
+      // heuristic plan/synthesis when EVERY LLM call fails. Without a budget the
+      // retry ladder would spend ~84s of real time sleeping (5 models × 2 keys ×
+      // 3 attempts, capped backoff) before degrading. Injecting the run budget
+      // makes the ladder spend its waits INSIDE the budget (openrouter.mjs caps
+      // its total backoff sleep to a share of it) — the same behavior, the same
+      // attempts, no 84s of wall-clock. The behavior under test is unchanged:
+      // every model/key/attempt still runs, then the orchestrator degrades.
+      SURF_AI_BUDGET_MS: '8000',
     },
   });
   try { rmSync(home, { recursive: true, force: true }); } catch {}

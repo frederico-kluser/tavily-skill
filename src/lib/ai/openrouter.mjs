@@ -23,6 +23,7 @@
 
 import { sleep } from '../flags.mjs';
 import { markBurned, setCooldown, cooldownActive } from '../state.mjs';
+import { detectHarnessBudgetMs } from '../dispatch.mjs';
 import { progress } from '../progress.mjs';
 
 export const OPENROUTER_BASE =
@@ -50,6 +51,34 @@ export const FALLBACK_MODELS = [
 const DEFAULT_TIMEOUT_MS = Number(process.env.SURF_AI_TIMEOUT_MS) || 120_000;
 // Sideline a key for this long after it exhausts its 429 retries.
 const RATE_LIMIT_COOLDOWN_MS = Number(process.env.SURF_AI_COOLDOWN_MS) || 45_000;
+
+// The retry ladder must fit INSIDE the run's time budget, never on top of it —
+// the same discipline ratelimit.mjs applies to pacing waits (its MAX_WAIT_MS
+// budget). An OpenRouter outage used to make one chat() call sleep ~40s across
+// models × keys × attempts, and a whole run ~84s with two keys — while the
+// unknown-harness budget floor is 30s, so the harness killed the process
+// (exit 143) before surf-ai could degrade to its deterministic path.
+// LADDER_BUDGET_* bound the TOTAL backoff sleep of ONE chat() call to a share
+// of the run budget; once the share is spent, the remaining attempts run
+// back-to-back and chat() throws AiUnavailableError so the orchestrator
+// degrades — fast, and still after trying every model × key × attempt.
+const LADDER_BUDGET_SHARE = 0.4;
+const LADDER_BUDGET_MAX_MS = 40_000;
+
+// Mirror of the orchestrator's resolveNormalBudget: an explicit budget (o.budgetMs
+// or SURF_AI_BUDGET_MS) wins, 0 / Infinity means unlimited, and the harness
+// signals (BASH_DEFAULT_TIMEOUT_MS & co) are the floor. chat() reads it here
+// because the orchestrator does not forward its remaining() budget down to the
+// LLM layer. For unknown harnesses the floor is 30s — stricter than the
+// orchestrator's 110s assumption, by design: the LLM ladder must survive even
+// the tightest harness the caller might actually be running under.
+function resolveRunBudgetMs(o) {
+  if (o.budgetMs === Infinity) return Infinity;
+  const explicit = Number(o.budgetMs ?? process.env.SURF_AI_BUDGET_MS);
+  if (explicit === 0) return Infinity;
+  if (Number.isFinite(explicit) && explicit > 0) return explicit;
+  return detectHarnessBudgetMs();
+}
 const REFERER = 'https://github.com/frederico-kluser/surf-agent-skill';
 const TITLE = 'surf-agent-skill';
 
@@ -338,6 +367,8 @@ function usableKeyIndexes(providerState) {
  * @param {string} [o.schemaName]      name for the json_schema block
  * @param {object} o.state             keys.json state (openrouter section read)
  * @param {string} [o.model]           model override (goes first in the chain)
+ * @param {number} [o.budgetMs]        run time budget — the LADDER sleeps of
+ *                                     this call are capped to a share of it
  * @param {number} [o.timeoutMs]
  * @param {number} [o.maxTokens]
  * @param {number} [o.temperature]
@@ -354,6 +385,23 @@ export async function chat(o) {
 
   const ps = (state && state.openrouter) || { keys: [], burned: [], cooldowns: [], current: 0 };
   const attempts = [];
+
+  // Ladder budget for THIS call: total sleep it may spend before giving up and
+  // letting the caller degrade. Once spent, remaining retries run back-to-back.
+  const ladderStart = Date.now();
+  const ladderCapMs = (() => {
+    const b = resolveRunBudgetMs(o);
+    return b === Infinity ? Infinity : Math.min(b * LADDER_BUDGET_SHARE, LADDER_BUDGET_MAX_MS);
+  })();
+  const planLadderWait = (ms) => {
+    if (ladderCapMs === Infinity) return ms;
+    return Math.max(0, Math.min(ms, ladderCapMs - (Date.now() - ladderStart)));
+  };
+  const ladderSleep = async (ms) => {
+    const w = planLadderWait(ms);
+    if (w > 0) await sleep(w);
+    return w;
+  };
 
   if (!usableKeyIndexes(ps).length) {
     throw new AiUnavailableError(
@@ -405,7 +453,7 @@ export async function chat(o) {
           res = await postChat(body, ps.keys[keyIdx], timeoutMs);
         } catch (e) {
           attempts.push({ model: modelId, key_index: keyIdx, kind: 'network', message: e.message });
-          if (attempt < 2) { await sleep(backoff(attempt) / 2); continue; }
+          if (attempt < 2) { await ladderSleep(backoff(attempt) / 2); continue; }
           break; // next key
         }
 
@@ -415,14 +463,14 @@ export async function chat(o) {
           if (res.data && res.data.error && !Array.isArray(res.data.choices)) {
             const m = mapError(res.data.error.code >= 400 ? res.data.error.code : 502, res.data);
             attempts.push({ model: modelId, key_index: keyIdx, ...m });
-            if (m.kind === 'rate_limit_429' && attempt < 2) { await sleep(backoff(attempt)); continue; }
+            if (m.kind === 'rate_limit_429' && attempt < 2) { await ladderSleep(backoff(attempt)); continue; }
             break;
           }
 
           const text = extractText(res.data);
           if (!text.trim()) {
             attempts.push({ model: modelId, key_index: keyIdx, kind: 'empty', message: 'empty completion' });
-            if (attempt < 2) { await sleep(300); continue; }
+            if (attempt < 2) { await ladderSleep(300); continue; }
             break;
           }
 
@@ -437,7 +485,7 @@ export async function chat(o) {
                 progress.retry(`${label} ${modelId}: reply not JSON — retrying without response_format`);
                 continue;
               }
-              if (attempt < 2) { await sleep(300); continue; }
+              if (attempt < 2) { await ladderSleep(300); continue; }
               break;
             }
           }
@@ -482,9 +530,12 @@ export async function chat(o) {
             // Honor Retry-After when OpenRouter sends it — it is the only
             // reliable rate-limit signal (the X-RateLimit-* headers are not
             // exposed to clients). Fall back to our own backoff otherwise.
+            // Both are capped by the ladder budget: on a persistent outage the
+            // wait must come out of the run's budget, not on top of it.
             const wait = res.retryAfterMs || backoff(attempt);
-            progress.retry(`${label} 429 — waiting ${wait}ms (attempt ${attempt + 1}/3)${res.retryAfterMs ? ' [Retry-After]' : ''}`);
-            await sleep(wait);
+            const shown = planLadderWait(wait);
+            progress.retry(`${label} 429 — waiting ${shown}ms (attempt ${attempt + 1}/3)${res.retryAfterMs ? ' [Retry-After]' : ''}`);
+            await ladderSleep(wait);
             continue;
           }
           setCooldown(state, 'openrouter', keyIdx, Date.now() + Math.max(RATE_LIMIT_COOLDOWN_MS, res.retryAfterMs || 0));
@@ -501,8 +552,9 @@ export async function chat(o) {
           }
           if (attempt < 2) {
             const wait = res.retryAfterMs || backoff(attempt);
-            progress.retry(`${label} 503 — waiting ${wait}ms`);
-            await sleep(wait);
+            const shown = planLadderWait(wait);
+            progress.retry(`${label} 503 — waiting ${shown}ms`);
+            await ladderSleep(wait);
             continue;
           }
           break; // next key, then next model
@@ -510,8 +562,9 @@ export async function chat(o) {
         if (m.kind === 'server_5xx') {
           consecutive5xx++;
           if (attempt < 2 && consecutive5xx < 3) {
-            progress.retry(`${label} ${m.statusCode} — backoff ${backoff(attempt)}ms`);
-            await sleep(backoff(attempt));
+            const shown = planLadderWait(backoff(attempt));
+            progress.retry(`${label} ${m.statusCode} — backoff ${shown}ms`);
+            await ladderSleep(backoff(attempt));
             continue;
           }
           break; // next key (and eventually next model)
