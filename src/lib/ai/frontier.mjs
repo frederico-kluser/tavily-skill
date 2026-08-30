@@ -72,6 +72,13 @@ export function queryKey(q) {
 }
 
 let seq = 0;
+
+// The audit trail is a FIFO window, not a full ledger: a long run can reject
+// 2000+ candidates, and nothing downstream re-reads the OLDEST rejections.
+// The window keeps the most recent W entries; toJSON still reports the true
+// lifetime total via `rejected_total` — the snapshot shape is the contract.
+const REJECTED_WINDOW = 200;
+
 function nextId(prefix) {
   seq += 1;
   return `${prefix}${seq}`;
@@ -103,7 +110,8 @@ export class Frontier {
     this.seen = new Set();       // every query key ever proposed, admitted or not
     this.admittedKeys = new Set(); // keys that were ADMITTED — the only permanent bar
     this.usedIds = new Set();    // every id handed to an admitted node, ever
-    this.rejected = [];          // {q, reason} — the audit trail
+    this.rejected = [];          // {q, reason} — the audit trail, a FIFO window capped at REJECTED_WINDOW
+    this.rejected_total = 0;     // lifetime rejections — the window is capped, the total is not
     this.closed = new Set();     // sub-question ids that are done
     // Every sub that has ever HAD an admitted node. A branch the frontier has
     // never seen is not a branch, and closing it must not bar it — see
@@ -195,8 +203,19 @@ export class Frontier {
     // orchestrator's dry-spell counter still ends a loop that only repeats.
     const key = queryKey(node.q);
     if (key) this.seen.add(key);
-    this.rejected.push({ q: node.q, sub: node.sub, depth: node.depth, reason });
+    this.#recordRejected({ q: node.q, sub: node.sub, depth: node.depth, reason });
     return { admitted: false, reason };
+  }
+
+  /**
+   * One rejection recorded: the lifetime counter grows monotonically, the
+   * window evicts the OLDEST entry once it holds REJECTED_WINDOW — the audit
+   * trail stays bounded while `rejected_total` keeps the true count.
+   */
+  #recordRejected(entry) {
+    this.rejected_total += 1;
+    this.rejected.push(entry);
+    if (this.rejected.length > REJECTED_WINDOW) this.rejected.shift();
   }
 
   /** The requested id when it is free, a suffixed variant when it is taken. */
@@ -236,7 +255,7 @@ export class Frontier {
     const before = this.nodes.length;
     this.nodes = this.nodes.filter(n => {
       if (n.sub !== sub) return true;
-      this.rejected.push({ q: n.q, sub, depth: n.depth, reason: `branch closed: ${reason}` });
+      this.#recordRejected({ q: n.q, sub, depth: n.depth, reason: `branch closed: ${reason}` });
       return false;
     });
     return before - this.nodes.length;
@@ -377,7 +396,7 @@ export class Frontier {
       closed_branches: [...this.closed],
       phantom_closed_branches: [...this.phantomClosed],
       rejected: this.rejected.slice(0, 50),
-      rejected_total: this.rejected.length,
+      rejected_total: this.rejected_total,
       seen_queries: this.seen.size,
     };
   }
