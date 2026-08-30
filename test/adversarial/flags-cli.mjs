@@ -120,6 +120,21 @@ async function throws(fn, code) {
 async function caught(fn) {
   try { await fn(); return null; } catch (e) { return e; }
 }
+/**
+ * Run a SYNCHRONOUS parser call whose defect a fix may legitimately turn into
+ * a throw, and report it as { ok, value } instead of letting it escape.
+ *
+ * Only ever wrap the setup of a bug(). A bug() is required to survive its own
+ * fix — that is the whole point of the second ledger — but the fix this file
+ * asks for on a usage error is `throw new FlagError(...)`, which an unguarded
+ * `const { pos } = parseFlags(...)` turns into an uncaught exception that
+ * exits 1 and takes the OTHER assertions of this suite with it. A bug() setup
+ * that cannot outlive its own fix blocks the fix. Never wrap an ok()/eq():
+ * there, a throw IS the failure and must go red.
+ */
+function attempt(fn) {
+  try { return { ok: true, value: fn() }; } catch (error) { return { ok: false, error }; }
+}
 
 /** Spawn a bin. Never reaches a real endpoint: SURF_BRAVE_API_BASE is invalid. */
 function cli(binName, args, opts = {}) {
@@ -183,48 +198,54 @@ section('parseFlags: BUGS ENCONTRADOS — arguments that vanish');
 {
   // `--` is the POSIX end-of-options separator. Here it is treated as a flag
   // whose name is the empty string, and it eats the token after it.
-  const { pos, flags } = parseFlags(['--', 'my query']);
+  const r = attempt(() => parseFlags(['--', 'my query']));
   bug(1, 'HIGH', 'src/lib/flags.mjs:67-78',
     '`--` (end-of-options) is parsed as a flag named "" and SWALLOWS the next positional',
-    pos.length === 0 && flags[''] === 'my query');
+    r.ok && r.value.pos.length === 0 && r.value.flags[''] === 'my query');
 }
 {
   // The VALUED_FLAGS list fixed this for KNOWN flags only. Any unknown flag
   // (a typo, a flag from an older version, a flag a wrapper adds) still eats
   // the question.
-  const { pos, flags } = parseFlags(['--deep', 'how do rate limits work']);
+  const r = attempt(() => parseFlags(['--deep', 'how do rate limits work']));
   bug(2, 'HIGH', 'src/lib/flags.mjs:70-78',
     'an UNKNOWN flag swallows the following positional (typo `--deep` eats the question)',
-    pos.length === 0 && flags.deep === 'how do rate limits work');
+    r.ok && r.value.pos.length === 0 && r.value.flags.deep === 'how do rate limits work');
 }
 {
-  const { pos, flags } = parseFlags(['---x', 'q']);
+  const r = attempt(() => parseFlags(['---x', 'q']));
   bug(3, 'LOW', 'src/lib/flags.mjs:67',
     '`---x` yields the flag key "-x" and swallows the next positional',
-    pos.length === 0 && flags['-x'] === 'q');
+    r.ok && r.value.pos.length === 0 && r.value.flags['-x'] === 'q');
 }
 {
-  const { pos, flags } = parseFlags(['--=x', 'q']);
+  const r = attempt(() => parseFlags(['--=x', 'q']));
   bug(4, 'LOW', 'src/lib/flags.mjs:60',
     '`--=x` yields the flag key "=x" (the `eq > 2` guard skips it) and swallows the positional',
-    pos.length === 0 && flags['=x'] === 'q');
+    r.ok && r.value.pos.length === 0 && r.value.flags['=x'] === 'q');
 }
 {
   // A single-dash typo is not a flag at all — it becomes part of the question.
-  const { pos } = parseFlags(['-q', 'how do rate limits work']);
+  // Guarded on purpose: the correct fix is a FLAG_USAGE throw, and the raw
+  // destructure this used to do would then crash the suite instead of letting
+  // the bug flip. The predicate itself is unchanged.
+  const r = attempt(() => parseFlags(['-q', 'how do rate limits work']));
   bug(5, 'HIGH', 'src/lib/flags.mjs:55',
     'a single-dash token is treated as a POSITIONAL, so `-q "question"` researches the literal question "-q question" and spends quota',
-    pos.length === 2 && pos[0] === '-q');
+    r.ok && r.value.pos.length === 2 && r.value.pos[0] === '-q');
 }
 {
   // flags.mjs:26-30 states the intent: "A valued flag whose next token is
   // missing ... Both directions are now a hard usage error instead of a wrong
   // answer." The `=` form never reaches that guard.
+  // Same guard as BUG#5, same reason: the fix this bug asks for is to make the
+  // `=` form throw FLAG_USAGE like the space form already does, and the raw
+  // destructure would then abort the suite. The predicate is unchanged.
   const spaceForm = await throws(() => parseFlags(['--sub-agents']), 'FLAG_USAGE');
-  const eqForm = parseFlags(['--sub-agents=', 'q']);
+  const eqForm = attempt(() => parseFlags(['--sub-agents=', 'q']));
   bug(6, 'MEDIUM', 'src/lib/flags.mjs:59-65 vs 72-75',
     '`--sub-agents=` (empty `=` value) bypasses the VALUED_FLAGS missing-value guard and silently defaults, while `--sub-agents` is a hard usage error',
-    spaceForm === true && eqForm.flags['sub-agents'] === '' && eqForm.pos[0] === 'q');
+    spaceForm === true && eqForm.ok && eqForm.value.flags['sub-agents'] === '' && eqForm.value.pos[0] === 'q');
 }
 
 // ============================================================================
@@ -486,9 +507,12 @@ section('--mode aliasing: BUGS ENCONTRADOS');
     'the same `--mode fast` is silently re-read as --search-mode on surf-search-normal/-unlimit but is a hard usage error on `surf-research-skill ai` — the three entry points DO drift, against the file header',
     !!viaBin && viaBin.code === 'FLAG_USAGE' && !!viaSub && viaSub.code === 'AI_CLI_USAGE');
 }
-bug(18, 'MEDIUM', 'src/lib/ai/cli.mjs:122 → src/lib/ai/orchestrator.mjs:90',
-  '--budget-ms is the only numeric flag never passed through numericFlag: it goes raw into Number(), so `--budget-ms abc` becomes NaN and is silently discarded instead of being a usage error',
-  Number(parseFlags(['--budget-ms', 'abc', 'q']).flags['budget-ms']).toString() === 'NaN');
+{
+  const r = attempt(() => parseFlags(['--budget-ms', 'abc', 'q']));
+  bug(18, 'MEDIUM', 'src/lib/ai/cli.mjs:122 → src/lib/ai/orchestrator.mjs:90',
+    '--budget-ms is the only numeric flag never passed through numericFlag: it goes raw into Number(), so `--budget-ms abc` becomes NaN and is silently discarded instead of being a usage error',
+    r.ok && Number(r.value.flags['budget-ms']).toString() === 'NaN');
+}
 {
   const unlimitHelp = readFileSync(BIN('surf-search-unlimit.mjs'), 'utf8');
   const orch = readFileSync(path.join(ROOT, 'src', 'lib', 'ai', 'orchestrator.mjs'), 'utf8');
@@ -617,15 +641,28 @@ section('Q3 — --queries-file: malformed JSON silently becomes junk QUERIES (qu
   // readListFile falls back to newline-splitting on ANY JSON parse error, so a
   // single missing bracket turns the file's syntax into billable searches.
   const f = bf('broken-queries.json', '[\n"alpha query",\n"beta query"\n');
-  // Fast, network-free proof: --sub-agents 99 throws AFTER the query list is
-  // built. Exit 2 (a flag error) instead of exit 1 ("Usage: ... need queries")
-  // proves the malformed file produced a NON-EMPTY query list.
+  // Fast, network-free proof: --sub-agents 99 is checked AFTER the query list is
+  // built, so it is a tracer, not a second cause — what proves the accusation is
+  // that the ONLY thing the CLI complains about is the flag. Nobody objected to
+  // the file, which means the malformed JSON was silently accepted as a query
+  // list. Discriminating on the exit code alone does NOT work: a fixed CLI that
+  // rejects the file would also be free to exit 2 (bugs #27/#28 argue it should),
+  // so `fast.code === 2` can never tell the fixed world from the broken one.
   const fast = cli('surf-research-skill.mjs', ['search-parallel', '--queries-file', f, '--sub-agents', '99']);
   const empty = cli('surf-research-skill.mjs', ['search-parallel', '--sub-agents', '99']);
-  ok('control: an EMPTY query list dies with Usage (exit 1) before the flag check', empty.code === 1, `exit ${empty.code}`);
+  // The ordering is the control, not the number: with an empty list the Usage
+  // message wins over the --sub-agents range check. The exit code is pinned to
+  // the USAGE CLASS, not to 1 — `--help` documents 1 as "the operation ran and
+  // failed" and 2 as "you typed the command wrong", and BUG#22 (with #20/#21/
+  // #23/#24/#27/#28) says this path must become 2. Asserting `=== 1` here made
+  // this file demand, as contract, the exact defect #22 reports.
+  ok('control: an EMPTY query list dies with the Usage message BEFORE the --sub-agents range check (usage class: 1 today, 2 once BUG#22 lands)',
+    /Usage:/.test(empty.err) && !/must be between/.test(empty.err) && (empty.code === 1 || empty.code === 2),
+    `exit ${empty.code}: ${empty.err.slice(0, 140)}`);
   bug(25, 'HIGH', 'bin/surf-research-skill.mjs:352-365 (readListFile catch-all)',
     'a malformed --queries-file does NOT error: JSON.parse fails and the file is silently re-read as a newline list, so its raw syntax becomes real, billable Brave queries',
-    fast.code === 2);
+    fast.code === 2 && /must be between/.test(fast.err)
+      && !/(must contain a JSON array|cannot read|malformed|invalid JSON|could not parse)/i.test(fast.err));
 
   // The money shot: show the junk queries that would be sent. Only ever
   // resolves brave.invalid, so this costs nothing.

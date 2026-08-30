@@ -428,9 +428,31 @@ bug('BUG-12', 'credentials embedded in a url survive canonicalisation and reach 
 bug('BUG-13', 'stripping `source`/`ref` merges genuinely different pages into one source',
   canonicalUrl('https://d.io/api?source=cli') === canonicalUrl('https://d.io/api?source=gui'),
   `ledger.mjs:13-14 — both → "${canonicalUrl('https://d.io/api?source=cli')}"; the second page's title is discarded`);
-bug('BUG-14', 'a RELATIVE url falls through the catch and merges across hosts',
-  canonicalUrl('/docs/install') === canonicalUrl('/docs/install'),
-  'ledger.mjs:27-29 — the catch returns the raw string, so /docs/install from two different sites is ONE source entry');
+{
+  // The condition here used to be `canonicalUrl(x) === canonicalUrl(x)` — the
+  // same call on both sides, i.e. `s === s` for a function that returns a
+  // string. It could not fail against ANY implementation, so BUG-14 was a
+  // permanent, unfalsifiable marker. canonicalUrl() takes no base, so the
+  // "across hosts" half is not expressible at that call site — but the merge it
+  // causes IS observable one level up, in the Ledger, with no production
+  // signature touched. Two searches on two different sites each return
+  // /docs/install; the ledger keys its source index on canonicalUrl, so they
+  // collapse into ONE numbered source and the second page's title is discarded.
+  // What would make this fail: any canonicalUrl that refuses to treat a
+  // host-less url as a citable identity (returning '' for it, as it already
+  // does for a blank string, makes #indexSource return null and the size 0),
+  // or a Ledger that keys relative urls per row.
+  const l14 = new Ledger();
+  l14.addSuccess(1, { id: 'r14a', q: 'install docs on site A', sub: 's1' },
+    { provider: 'brave', data: { results: [{ url: '/docs/install', title: 'Site A — Install' }] } });
+  l14.addSuccess(2, { id: 'r14b', q: 'install docs on site B', sub: 's2' },
+    { provider: 'brave', data: { results: [{ url: '/docs/install', title: 'Site B — Install' }] } });
+  bug('BUG-14', 'a RELATIVE url falls through the catch and is kept verbatim, with no host — so the same /path found on two different sites merges into ONE source entry',
+    canonicalUrl('/docs/install') === '/docs/install'
+      && l14.sourceIndex.size === 1
+      && l14.rows[0].results[0].n === 1 && l14.rows[1].results[0].n === 1,
+    `ledger.mjs:27-29 returns the raw string; ledger.mjs:100-106 then keys the source index on it — ${l14.sourceIndex.size} source(s) for two different pages, both cited as [${l14.rows[0].results[0].n}], surviving title "${[...l14.sourceIndex.values()][0].title}"`);
+}
 bug('BUG-15', 'canonicalUrl is not idempotent on doubled slashes',
   canonicalUrl(canonicalUrl('https://a.com/x//')) !== canonicalUrl('https://a.com/x//'),
   `ledger.mjs:25 strips ONE trailing slash: "https://a.com/x//" → "${canonicalUrl('https://a.com/x//')}" → "${canonicalUrl(canonicalUrl('https://a.com/x//'))}"`);

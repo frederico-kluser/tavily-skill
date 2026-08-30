@@ -522,8 +522,16 @@ section('the gate: what a transient failure writes into keys.json');
   const st5 = { brave: { ...blankProvider(), keys: ['k'] }, openrouter: blankProvider() };
   globalThis.fetch = async () => ({ ok: false, status: 503, headers: new Map(), text: async () => '<html>maintenance</html>' });
   const outage = await resolveGate(st5, 'brave', { persist: false });
-  ok('a Brave 503 during the gate is recorded the same way (same defect, second entry point)',
-    outage.verdict === GATE.INVALID && st5.brave.validated[0].ok === false,
+  // NOT a contract. This used to be an ok(), and its own description said
+  // "same defect, second entry point" — a defect asserted as if it were
+  // correct behaviour, which is logically incompatible with gate-state.mjs's
+  // P5 (a 5xx must NOT be cached as a verdict). No implementation can satisfy
+  // both. The condition is unchanged (only `|| {}`-guarded, the way P5 writes
+  // the same expression, so an empty `validated` reads as FIXED instead of
+  // throwing a TypeError and taking the whole suite down).
+  bug('BUG-21b', 'CRITICAL', 'src/lib/preflight.mjs:142-147 + src/lib/providers/brave.mjs:400-405',
+    'the SAME defect as BUG-21 reached through its second entry point: it is not only a dead network. A Brave 5xx — a maintenance window, a bad deploy on their side — also comes back from validate() as valid:false, and resolveGate caches it into keys.json with ok:false, so an outage that lasts a minute condemns every key for the whole 7-day VALIDATION_TTL_MS. The fix is the same one BUG-21 asks for: a transient failure must stay unresolved and be re-probed, never cached as a verdict',
+    outage.verdict === GATE.INVALID && (st5.brave.validated[0] || {}).ok === false,
     JSON.stringify(st5.brave.validated[0]));
 
   // The correct half: an auth failure SHOULD stick.

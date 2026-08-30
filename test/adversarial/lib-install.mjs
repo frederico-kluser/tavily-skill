@@ -116,6 +116,21 @@ async function rejects(fn, code) {
   try { await fn(); return { threw: false }; }
   catch (e) { return { threw: true, code: e.code, name: e.name, message: e.message, error: e }; }
 }
+/**
+ * Like rejects(), but keeps the resolved value too: { resolved, value, error }.
+ *
+ * Use it wherever a bug() says "this RESOLVES when it should reject". The fix
+ * for such a bug is to make it reject, and a bare `await` would then be an
+ * unhandled rejection that kills the process — taking every other assertion in
+ * this file, and the whole bug ledger, with it. A bug() has to be able to
+ * outlive its own fix, otherwise it blocks the fix.
+ */
+async function settle(fn) {
+  try { return { resolved: true, value: await fn(), error: null }; }
+  catch (error) { return { resolved: false, value: undefined, error }; }
+}
+/** lstat that answers "not there" instead of throwing ENOENT. */
+function lstatOrNull(p) { try { return lstatSync(p); } catch { return null; } }
 
 const SANDBOX = mkdtempSync(path.join(os.tmpdir(), 'surf-adv-box-'));
 let boxN = 0;
@@ -239,11 +254,26 @@ section('search(): the gate contract promised in src/index.mjs:10-13');
 {
   // searchParallel swallows the very failure the project exists to make loud.
   fetchCalls = [];
-  const out = await lib.searchParallel(['a', 'b'], { braveKeys: [], skipConfigFile: true, skipDotenv: true });
+  // settle(), not a bare await: the FIX for G4 is to make this reject on the
+  // gate, and an unguarded await would then be an unhandled rejection that
+  // takes this whole suite down instead of flipping G4 to FIXED. The two
+  // readings must coexist — today it resolves, after the fix it rejects.
+  const g4 = await settle(() => lib.searchParallel(['a', 'b'], { braveKeys: [], skipConfigFile: true, skipDotenv: true }));
+  const out = g4.value;
   bug('G4', 'searchParallel() RESOLVES with every batch failed when there is no key — never rejects',
-    out && out.summary && out.summary.succeeded === 0 && out.summary.failed === 2,
+    g4.resolved && out && out.summary && out.summary.succeeded === 0 && out.summary.failed === 2,
     'preflight.mjs:3 — "no 0 sources but exit 0" — holds for the CLI but not for the library fan-out');
-  eq('...and it reports the failures honestly at least', out.summary.failed, 2);
+  // The invariant that must hold BOTH before and after the fix: a keyless
+  // fan-out is never silent. Either it rejects on the gate carrying the exit-78
+  // contract (GateError: code BraveKeyMissing, exitCode EXIT_CONFIG=78, pinned
+  // at :153), or — as today — it resolves reporting both batches as failed.
+  ok('a keyless fan-out is never silent: it rejects with the exit-78 gate contract, or it reports the failures honestly',
+    g4.resolved
+      ? (!!out && !!out.summary && out.summary.failed === 2)
+      : (!!g4.error && g4.error.code === 'BraveKeyMissing' && g4.error.exitCode === 78),
+    g4.resolved
+      ? `resolved, failed=${out && out.summary && out.summary.failed}`
+      : `rejected ${g4.error && g4.error.name}/${g4.error && g4.error.code}, exitCode=${g4.error && g4.error.exitCode}`);
   eq('...costing no request', fetchCalls.length, 0);
 }
 
@@ -251,13 +281,18 @@ section('search(): enum validation is not applied uniformly');
 {
   const r1 = await rejects(() => lib.search('q', { mode: 'turbo', skipConfigFile: true, skipDotenv: true }));
   ok('a bad --mode on ONE query is a hard usage error', r1.threw && r1.code === 'FLAG_USAGE', r1.code);
-  const r2 = await lib.search(['a', 'b'], { mode: 'turbo', skipConfigFile: true, skipDotenv: true });
+  // settle(), same trap as G4: the fix for E1/E2 is to raise FLAG_USAGE the way
+  // the single-query form at :283 already does, and a bare await would then be
+  // an unhandled rejection that kills the suite instead of flipping the bug.
+  const e1 = await settle(() => lib.search(['a', 'b'], { mode: 'turbo', skipConfigFile: true, skipDotenv: true }));
+  const r2 = e1.value;
   bug('E1', 'the same bad enum on a BATCH resolves with per-item failures instead of throwing',
-    !!r2 && r2.operation === 'search-batch' && r2.summary.failed === 2,
+    e1.resolved && !!r2 && r2.operation === 'search-batch' && r2.summary.failed === 2,
     'buildArgs() is called inside the per-item try in search.mjs:48');
-  const r3 = await lib.searchParallel(['a', 'b'], { mode: 'turbo', skipConfigFile: true, skipDotenv: true });
+  const e2 = await settle(() => lib.searchParallel(['a', 'b'], { mode: 'turbo', skipConfigFile: true, skipDotenv: true }));
+  const r3 = e2.value;
   bug('E2', 'searchParallel() also downgrades a usage error to a per-item failure',
-    !!r3 && r3.summary.failed === 2,
+    e2.resolved && !!r3 && r3.summary.failed === 2,
     'buildArgs() runs inside the mapPool worker in search.mjs:100');
   for (const [name, opts] of [['depth', { depth: 'deep' }], ['topic', { topic: 'sports' }],
                               ['time', { time: 'decade' }], ['safesearch', { safesearch: 'maybe' }]]) {
@@ -623,7 +658,9 @@ section('harness-install: install / uninstall round trip');
   bug('H3', 'unlinkIfOurs() refuses to remove OUR OWN symlink once it dangles — existsSync() returns false for a broken link',
     removed === false && lstatSync(link).isSymbolicLink(),
     'harness-install.mjs:81 — uninstalling after the package dir is gone leaves the dead link forever');
-  rmSync(link);
+  // force: the fix for H3 makes unlinkIfOurs() delete this link itself, and an
+  // unguarded rmSync would then throw ENOENT and fail the suite for being fixed.
+  rmSync(link, { force: true });
 }
 
 {
@@ -658,8 +695,13 @@ section('harness-install: install / uninstall round trip');
   await hi.installSkill(pkg);
   symlinkSync(pkg, path.join(dir, 'surf-free-agent-skill'));
   await hi.uninstallSkill(pkg);
+  // Same predicate as before — "the legacy link is still there, live or dangling"
+  // — but the lstat is ENOENT-safe: today existsSync() short-circuits it, and
+  // the day uninstallSkill() does remove the link, the raw lstat would throw
+  // before bug() was ever reached and kill the suite instead of flipping H12.
+  const legacyLink = path.join(dir, 'surf-free-agent-skill');
   bug('H12', 'uninstallSkill() never touches LEGACY_NAMES — the v7 surf-free-agent-skill link survives a full uninstall',
-    existsSync(path.join(dir, 'surf-free-agent-skill')) || lstatSync(path.join(dir, 'surf-free-agent-skill')).isSymbolicLink(),
+    existsSync(legacyLink) || (lstatOrNull(legacyLink) || { isSymbolicLink: () => false }).isSymbolicLink(),
     'only postinstall calls cleanupLegacy(); `npm rm -g` leaves the keyless-search skill advertised');
   for (const dd of hi.HARNESS_DIRS) rmSync(dd, { recursive: true, force: true });
 }
@@ -680,7 +722,8 @@ section('harness-install: relative symlinks are resolved against the WRONG base'
     removed === false,
     'harness-install.mjs:86 — path.resolve(cur) should be path.resolve(path.dirname(link), cur)');
   process.chdir(cwd0);
-  rmSync(link);
+  // force: same trap as H3 — once H4 is fixed the link is already gone here.
+  rmSync(link, { force: true });
 }
 {
   // The same flaw in the other direction: it DELETES a link that is not ours.
