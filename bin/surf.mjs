@@ -2,7 +2,8 @@
 // `surf` — bundle wrapper for surf-research-skill + surf-plan-skill.
 //
 // Running `surf` with no args launches an interactive setup that:
-//   1. Verifies both skills are installed (symlinks present)
+//   1. Verifies EVERY skill this package installs is present (symlinks live,
+//      not dangling) — the list is read from the installer, never re-typed
 //   2. Lists currently-configured keys per provider
 //   3. Offers an interactive menu: add / list / remove / doctor / quit
 //   4. EVERY key added is validated LIVE against the provider's API before
@@ -18,15 +19,24 @@ import { stdin, stdout, stderr } from 'node:process';
 import { existsSync, promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import { loadState, saveStateAtomic, setValidation, KEYS_FILE, PROVIDERS, SEARCH_PROVIDERS } from '../src/lib/state.mjs';
 import { validateKey, formatValidation } from '../src/validators/index.mjs';
-import { HARNESS_DIRS } from '../src/lib/harness-install.mjs';
+// Namespace import on purpose: SKILLS is not (yet) exported, and a named
+// import of a missing binding is a link-time SyntaxError, not a runtime
+// `undefined`. This way canonicalSkillNames() can prefer it the day it is.
+import * as harnessInstall from '../src/lib/harness-install.mjs';
 import { gateStatus, resolveGate, GATE, formatGate, EXIT_CONFIG } from '../src/lib/preflight.mjs';
 import { runAiSetup } from '../src/lib/ai/setup.mjs';
 import { keysFromEnv, PRIMARY_MODEL } from '../src/lib/ai/openrouter.mjs';
 
+const { HARNESS_DIRS } = harnessInstall;
+
 const VERSION = '8.0.0';
+
+const PKG_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const HARNESS_INSTALL_SRC = path.join(PKG_ROOT, 'src', 'lib', 'harness-install.mjs');
 
 const HELP = `surf — multi-skill setup & validation
 
@@ -43,7 +53,10 @@ Commands:
   list                   List configured keys (masked) + last-known state
   validate [provider]    Re-validate all keys (or just one provider's)
   remove <provider> <i>  Remove key #i from provider
-  doctor                 Diagnostics: skills installed? keys valid? harness symlinks?
+  doctor [--offline]     Diagnostics: skills installed? keys valid? harness symlinks?
+                         By default a key with no cached verdict costs ONE live
+                         probe (free — no credit, no quota). --offline skips it
+                         and reports only what keys.json already knows.
   --help, -h             Show this help
   --version, -v          Show version
 
@@ -82,27 +95,73 @@ function fmtBytes(n) {
   return `${(n / 1024 / 1024).toFixed(1)}MB`;
 }
 
+/**
+ * WHICH SKILLS THIS PACKAGE INSTALLS — read, never re-typed.
+ *
+ * This used to be `['surf-research-agent-skill', 'surf-plan-agent-skill']`,
+ * hardcoded right here. The installer's own list (SKILLS in
+ * src/lib/harness-install.mjs) grew a third entry, surf-search-agent-skill,
+ * and started symlinking it into all four harness dirs — 12 links — while the
+ * doctor kept checking two names and reported a clean bill of health for an
+ * install that was missing a skill entirely. A second copy of a list is a
+ * second thing to forget.
+ *
+ * SKILLS is not exported (harness-install.mjs belongs to the installer, and
+ * this wave may not edit it), so this derives it, in order of authority:
+ *   1. the export, the day it exists — nothing to parse, nothing to drift;
+ *   2. the SKILLS literal read out of that module's SOURCE — still the one
+ *      canonical list, just fetched the awkward way;
+ *   3. last resort, the package layout the installer walks: the root skill
+ *      plus every directory under skills/. Only reachable if the file cannot
+ *      be read at all, and it keeps a blind doctor from being a silent one.
+ * Adding a fourth skill to SKILLS therefore needs no edit in this file.
+ */
+async function canonicalSkillNames() {
+  if (Array.isArray(harnessInstall.SKILLS)) {
+    const names = harnessInstall.SKILLS.map(s => s && s.name).filter(Boolean);
+    if (names.length) return { names, source: 'harness-install.mjs (exported SKILLS)' };
+  }
+  try {
+    const src = await fs.readFile(HARNESS_INSTALL_SRC, 'utf8');
+    const block = src.match(/const\s+SKILLS\s*=\s*\[([\s\S]*?)\]\s*;/);
+    const names = block
+      ? [...block[1].matchAll(/\bname\s*:\s*['"]([^'"]+)['"]/g)].map(m => m[1])
+      : [];
+    if (names.length) return { names, source: 'harness-install.mjs (SKILLS literal)' };
+  } catch {}
+  try {
+    const entries = await fs.readdir(path.join(PKG_ROOT, 'skills'), { withFileTypes: true });
+    const names = ['surf-research-agent-skill', ...entries.filter(e => e.isDirectory()).map(e => e.name)];
+    return { names, source: 'package layout (skills/*)' };
+  } catch {}
+  return { names: [], source: null };
+}
+
 async function detectSkills() {
-  const home = os.homedir();
-  const skillsToCheck = ['surf-research-agent-skill', 'surf-plan-agent-skill'];
+  const { names, source } = await canonicalSkillNames();
   const found = {};
-  for (const skill of skillsToCheck) {
+  for (const skill of names) {
     found[skill] = { dirs: [] };
     for (const dir of HARNESS_DIRS) {
       const link = path.join(dir, skill);
-      if (existsSync(link)) {
-        try {
-          const stat = await fs.lstat(link);
-          found[skill].dirs.push({
-            path: link,
-            isSymlink: stat.isSymbolicLink(),
-            isDir: stat.isDirectory(),
-          });
-        } catch {}
-      }
+      // lstat, NOT existsSync: existsSync FOLLOWS the link, so a DANGLING
+      // symlink — precisely what `npm i -g` leaves behind when the package dir
+      // moves — was indistinguishable from "nothing installed here". The two
+      // states deserve different sentences: one harness is broken, and
+      // "reinstall" is the fix for a link that is missing, not for one that is
+      // there and points at nothing.
+      let stat = null;
+      try { stat = await fs.lstat(link); } catch { continue; }
+      const isSymlink = stat.isSymbolicLink();
+      found[skill].dirs.push({
+        path: link,
+        isSymlink,
+        isDir: stat.isDirectory(),
+        broken: isSymlink && !existsSync(link),
+      });
     }
   }
-  return found;
+  return { names, source, found };
 }
 
 async function cmdList() {
@@ -208,18 +267,37 @@ async function cmdAdd(rl) {
   }
 }
 
-async function cmdDoctor() {
+async function cmdDoctor({ offline = false } = {}) {
   out('## Skills');
-  const found = await detectSkills();
+  const { names, source, found } = await detectSkills();
+  if (!names.length) {
+    // Never fail quiet here: an empty list would check nothing and print
+    // nothing, which reads exactly like "all good".
+    out(`  ✗ could not read the canonical skill list (SKILLS in ${HARNESS_INSTALL_SRC})`);
+    out(`    → this build cannot tell you which skills should be installed`);
+    process.exitCode = 1;
+  } else {
+    out(`  (${names.length} skill${names.length === 1 ? '' : 's'} per ${source}, across ${HARNESS_DIRS.length} harness dirs)`);
+  }
   for (const [skill, info] of Object.entries(found)) {
-    if (!info.dirs.length) {
-      out(`  ✗ ${skill}: NOT found in any harness skill dir`);
+    const live = info.dirs.filter(d => !d.broken);
+    const broken = info.dirs.filter(d => d.broken);
+    if (!live.length) {
+      out(broken.length
+        ? `  ✗ ${skill}: ${broken.length} DANGLING symlink(s), 0 working`
+        : `  ✗ ${skill}: NOT found in any harness skill dir`);
+      for (const d of broken) out(`      ${d.path} → target is gone`);
       out(`    → reinstall: npm i -g surf-agent-skill@latest`);
       process.exitCode = 1;
     } else {
-      const sample = info.dirs[0];
-      out(`  ✓ ${skill}: ${info.dirs.length} harness${info.dirs.length === 1 ? '' : 'es'}`);
-      for (const d of info.dirs) out(`      ${d.path}${d.isSymlink ? ' (symlink)' : ''}`);
+      out(`  ✓ ${skill}: ${live.length} harness${live.length === 1 ? '' : 'es'}`);
+      for (const d of live) out(`      ${d.path}${d.isSymlink ? ' (symlink)' : ''}`);
+      if (broken.length) {
+        out(`  ✗ ${skill}: ${broken.length} DANGLING symlink(s) — those harnesses cannot load it`);
+        for (const d of broken) out(`      ${d.path} → target is gone`);
+        out(`    → repair: npm i -g surf-agent-skill@latest`);
+        process.exitCode = 1;
+      }
     }
   }
 
@@ -235,10 +313,37 @@ async function cmdDoctor() {
   // A count is not a verdict. The previous doctor happily reported
   // "brave 1 key(s), 1 burned" and exited 0 — the exact state in which every
   // research command fails. Ask the gate instead.
+  //
+  // WHY THIS PROBES BY DEFAULT
+  // --------------------------
+  // resolveGate() spends at most ONE live validation, and only when the key
+  // has no cached verdict — the single case where no offline answer exists.
+  // It costs no Brave credit (a q-less request is rejected before billing) and
+  // the result is cached for 7 days, so a doctor run on a settled machine puts
+  // nothing on the wire. Staying offline here would be worse than useless: the
+  // offline gate cannot return UNREACHABLE, so a machine with a dead network
+  // and a never-judged key would be told `unvalidated`, exit 0 — and the very
+  // next search would exit 78. A doctor used as a gate has to predict the
+  // command that follows it, not flatter it.
+  //   --offline (or SURF_DOCTOR_OFFLINE=1) opts out for callers that must not
+  // touch the network; it then refuses to certify what it did not check.
   out('\n## Brave key gate (this is what every command checks)');
-  const verdict = await resolveGate(state, 'brave', { persist: true });
+  const offlineOnly = offline || process.env.SURF_DOCTOR_OFFLINE === '1';
+  out(offlineOnly
+    ? '  (offline: keys.json only — nothing left this machine)'
+    : '  (a cached verdict costs nothing; an unjudged key costs ONE free probe)');
+  const verdict = offlineOnly
+    ? gateStatus(state, 'brave')
+    : await resolveGate(state, 'brave', { persist: true });
   if (verdict.verdict === GATE.READY) {
     out(`  ✓ ready — key #${verdict.index} (${verdict.detail})`);
+  } else if (offlineOnly && verdict.verdict === GATE.UNVALIDATED) {
+    // Not a verdict — the absence of one. Saying "ready" here is the lie this
+    // command exists to stop, and saying "broken" would be one in the other
+    // direction, so it says neither and does not touch the exit code.
+    out(`  ⚠ undecided — key #${verdict.index} is configured but was never judged,`);
+    out(`    and --offline forbids the one free probe that would settle it.`);
+    out(`    Run \`surf doctor\` without --offline for a real verdict.`);
   } else {
     const { text } = formatGate(verdict.verdict, verdict.detail, 'brave');
     for (const line of text.split('\n')) out(`  ${line}`);
@@ -274,10 +379,17 @@ async function interactiveMenu() {
   out('');
   out('┌─ surf — multi-skill setup & validation ─────────────────');
   out(`│ Skills detected:`);
-  const found = await detectSkills();
+  const { names, found } = await detectSkills();
+  // Widest name, not a magic 20: 'surf-research-agent-skill' is 25 chars, so
+  // the column never lined up and a longer future name would look worse still.
+  const width = names.reduce((w, n) => Math.max(w, n.length), 0);
   for (const [skill, info] of Object.entries(found)) {
-    const status = info.dirs.length ? `✓ ${info.dirs.length} harness${info.dirs.length === 1 ? '' : 'es'}` : '✗ NOT INSTALLED';
-    out(`│   ${skill.padEnd(20)} ${status}`);
+    const live = info.dirs.filter(d => !d.broken);
+    const broken = info.dirs.length - live.length;
+    const status = live.length
+      ? `✓ ${live.length} harness${live.length === 1 ? '' : 'es'}${broken ? ` (+${broken} DANGLING)` : ''}`
+      : (broken ? `✗ ${broken} DANGLING symlink(s)` : '✗ NOT INSTALLED');
+    out(`│   ${skill.padEnd(width)} ${status}`);
   }
 
   const state = await loadState();
@@ -353,7 +465,7 @@ try {
   } else if (cmd === 'remove') {
     await cmdRemove(rest);
   } else if (cmd === 'doctor') {
-    await cmdDoctor();
+    await cmdDoctor({ offline: rest.includes('--offline') });
   } else {
     err(`Unknown command: ${cmd}. Try 'surf --help'.`);
     process.exit(1);
