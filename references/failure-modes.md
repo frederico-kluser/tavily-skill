@@ -97,6 +97,21 @@ verificação. Nesse estado as fases de verificação e síntese também não po
 gastar sub-agente: faça T4, T5 e T6 você mesmo, inline, e declare no relatório
 final que rodaram sem sub-agente por estouro do teto de sessão.
 
+**A degradação é declarada, mas NÃO é equivalente à verificação normal.** O T4
+é "revisor adversarial com ZERO contexto" e o T5 existe para pegar o que você
+não viu; rodados inline pelo agente que tomou todas as decisões de fechamento,
+os dois perdem exatamente a propriedade que os torna úteis. Rebaixe o
+resultado explicitamente:
+
+- **Toda** afirmação da resposta final desce um nível de confiança; o que
+  desce para `Baixa` carrega o tratamento de SOLITÁRIA (ressalva escrita).
+- O T8 declara, em "Verificação":
+  `sem revisão independente (teto de sessão) — verificação auto-aplicada`.
+- O veredito `PRONTO PARA SÍNTESE` produzido inline **não** autoriza fechar
+  dúvida alguma que estivesse ABERTA: nesse estado o ramo de correção da fase
+  5 não existe e tudo que faltava vai para "Questões em aberto", com o que a
+  fecharia.
+
 ## `rajada-vazia`
 
 **Sintoma.** Rajada inteira voltou sem achado.

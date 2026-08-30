@@ -127,27 +127,35 @@ metadata:
     <body>Paralelismo real acontece quando você emite TODAS as chamadas
       <tool>Agent</tool> da rajada na MESMA mensagem. Uma chamada por mensagem
       é execução sequencial disfarçada de rajada.
-      Passe `run_in_background: false` em toda chamada Agent desta skill:
-      desde a v2.1.198 o sub-agente roda em BACKGROUND por padrão, devolvendo
-      só o recibo de lançamento enquanto o handoff chega num TURNO POSTERIOR —
-      sem esse campo a barreira da R5 não tem mecanismo atrás dela. Primeiro
-      plano também preserva o conjunto completo de ferramentas do sub-agente.
-      Se o parâmetro não existir no schema desta sessão, não o invente: ou só
-      há sub-agente síncrono (barreira automática), ou o fork mode está ligado
-      e tudo roda em background. O `fork` da rota CALLER é sempre background.
-      Em qualquer desses casos, vale a barreira contável da R5.</body>
+      A BARREIRA entre rajadas não depende de nenhum parâmetro de chamada:
+      ela é imposta pelo fluxo e materializada no arquivo (R5) — você só
+      emite a rajada seguinte depois que os N handoffs desta foram registrados
+      em disco. Onde o schema da sessão expuser `run_in_background`, prefira
+      `false`: o retorno síncrono entrega o handoff na mesma mensagem e
+      preserva o conjunto completo de ferramentas do sub-agente. Se o
+      parâmetro não existir no schema desta sessão, não o invente: o harness
+      ignora o que não conhece, e um parâmetro ignorado não trava nada — só
+      silencia. A barreira contável da R5 vale igual nos dois casos. O `fork`
+      da rota CALLER é sempre background: a barreira contável é a única que
+      se aplica a ele.</body>
   </rule>
   <rule id="R5" severity="FATAL">
     <title>Rajada é barreira</title>
     <body>Você espera TODOS os sub-agentes da rajada voltarem antes de triar.
       Triar com metade dos handoffs gera dúvidas que a outra metade já
       respondeu, e a rajada seguinte nasce duplicada.
-      Como a barreira é imposta: com `run_in_background: false` a chamada só
-      retorna com o handoff, e o próprio retorno É a barreira. Onde isso é
-      impossível, a barreira é CONTÁVEL — você marcou N dúvidas como EM-VOO;
-      não triaga, não dispare a rajada seguinte e não reescreva o registro
-      enquanto não tiver recebido N conclusões. Turno que passa sem notificação
-      nova não é permissão para avançar: é só espera.</body>
+      COMO A BARREIRA É IMPOSTA — pelo fluxo, com artefato em disco, não por
+      parâmetro de chamada: no disparo da rajada você escreve no topo do
+      `DOUBTS.md` a linha `<!-- BARREIRA rajada N: em-voo=X recebidos=0 -->`
+      (X = quantas dúvidas você marcou EM-VOO) e avança `recebidos` a cada
+      handoff que retorna. Enquanto `recebidos < em-voo` você não tria, não
+      reescreve o registro e não emite a rajada seguinte. A fase 4 começa
+      RELENDO essa linha do disco (passo 0) — quem verifica o seu trabalho
+      confere o arquivo, não a sua lembrança. Turno que passa sem notificação
+      nova não é permissão para avançar: é só espera. Onde o schema expuser
+      `run_in_background: false` (ver R4), o retorno síncrono torna a barreira
+      automática; onde não expuser, a barreira contável é a única — e é
+      suficiente.</body>
   </rule>
   <rule id="R6" severity="FATAL">
     <title>Fronteira explícita em todo sub-agente</title>
@@ -214,6 +222,9 @@ metadata:
 <!-- BARREIRA rajada N: em-voo=5 recebidos=2 -->
 <!-- CONTAGEM: A=23 B=4 C=11 G=2 E=3 I=1 H=1 F=1 · U=37 -->
     ]]>
+    Convenção declarada: quem as escreve é o mesmo agente que elas
+    constrangem — são auto-verificação, não um portão externo. Quem audita as
+    usa como pista e refaz a conta, não como prova.
     `U` é o `wc -l` de `research/{{SLUG}}/SOURCES.txt` — o inteiro que o C3
     compara.</header>
 
@@ -269,6 +280,17 @@ metadata:
     | H | respondidas fraco | RESPONDIDA-FRACA |
     | F | abertas na entrega | ABERTA |
 
+    TETO DA INFERIDA: **G ≤ ⌈0,20 × A⌉** — no máximo 20% das dúvidas do
+    registro fecha por inferência, arredondando para cima (A=100 → G até 20;
+    a 21ª dispara; A=6 → G até 2; a 3ª dispara). Conta-se na linha CONTAGEM
+    do `DOUBTS.md`, como a identidade: `G > ⌈A/5⌉` é registro errado, e a
+    dúvida que estourou o teto só fecha disparando sub-agente. A trava de
+    conteúdo da inferida (ver `routing`) proíbe as afirmações que envelhecem;
+    este teto proíbe a inferência como sistema — sem ele, um run inferiria
+    TODAS as respostas (G = A) e a identidade fecharia do mesmo jeito.
+    Atingido o teto, INFERIDA está PROIBIDA mesmo para resposta limpa, sem
+    número, versão, preço, data, limite ou nome de API.
+
     EM-VOO não é terminal e não tem letra: na entrega ele tem de ser ZERO.
     Se a identidade não fechar, o REGISTRO está errado — conserte o registro,
     nunca o número. `D` (admitidas em rajadas posteriores) é métrica de fluxo:
@@ -314,7 +336,11 @@ metadata:
     citação `[n]` no entregável —, INFERIDA está PROIBIDA: dispare o
     sub-agente. São exatamente as afirmações que envelhecem, e é para não
     chutá-las que esta skill existe. Uma INFERIDA só entra no CONTEXTO
-    ESTABELECIDO com a etiqueta `(inferido, não verificado)`.</spawn-threshold>
+    ESTABELECIDO com a etiqueta `(inferido, não verificado)`.
+    E o TETO DA INFERIDA (I5) vale para TODA inferida, mesmo a limpa: fechadas
+    por INFERIDA já são `⌈20% × A⌉` no registro? Então esta também dispara
+    sub-agente, no lugar de inferir. As duas travas se leem da linha CONTAGEM
+    do `DOUBTS.md` — a de conteúdo mora aqui, a de teto mora na identidade.</spawn-threshold>
   <ordering>Rotas CALLER e PROJECT vêm ANTES de qualquer WEB, em toda rajada —
     não só na 0. Buscar na web "melhor biblioteca de X" sem saber a versão do
     runtime do projeto produz uma resposta correta e inútil.</ordering>
@@ -438,8 +464,10 @@ metadata:
         entra no prompt de cada um.</step>
       <step><strong>Dispare TODAS as dúvidas WEB restantes na mesma
         mensagem</strong> — um <tool>Agent</tool> por dúvida,
-        `subagent_type: "general-purpose"`, `run_in_background: false`,
-        template T3 preenchido, marcando cada dúvida como EM-VOO.
+        `subagent_type: "general-purpose"` (e `run_in_background: false`
+        apenas onde o schema da sessão o expuser — a barreira não depende
+        dele, ver R5), template T3 preenchido, marcando cada dúvida como
+        EM-VOO.
         DIVIDA O ORÇAMENTO: cada comando surf-search-* no prompt T3 leva
         `--sub-agents=max(1, floor(N / <tamanho desta rajada>))`. Os dois níveis
         se somam, não se multiplicam — sem isso, 10 sub-agentes com o default de
@@ -501,7 +529,11 @@ metadata:
           Se for, marque DUPLICATA-DE-Dn e descarte.</gate>
         <gate id="G2" name="decisão-relevante">A resposta muda uma parte
           CONCRETA do entregável, e você consegue nomear qual. "Seria
-          interessante saber" reprova.</gate>
+          interessante saber" reprova. Convenção declarada: o JUÍZO (a parte é
+          mesmo concreta e afetada?) é seu e ninguém o verifica — o que este
+          portão torna verificável é o REGISTRO, a coluna "por que importa"
+          (I2) com a parte nomeada. Quem audita confere a coluna, não o seu
+          julgamento.</gate>
         <gate id="G3" name="respondível">Existe evidência que plausivelmente a
           feche — publicada na web, no repositório, ou na conversa em que esta
           skill foi carregada. G3 reprova por UMA destas quatro causas, e só
@@ -509,7 +541,11 @@ metadata:
           futuro; (b) intenção de terceiro; (c) dado privado não publicado;
           (d) a pergunta não é factual. Fora dessas quatro, NA DÚVIDA ADMITA —
           o custo de uma dúvida a mais é um sub-agente; o de uma a menos é uma
-          resposta errada.</gate>
+          resposta errada. Convenção declarada: o verificável é o REGISTRO —
+          o motivo nomeia a letra a/b/c/d. O acerto do juízo ("existe
+          evidência plausivelmente") é previsão sobre o mundo feita antes de
+          olhar: um portão não transforma palpite em fato, só registra a
+          declaração do palpite.</gate>
         <gate id="G4" name="não-regressiva">Não é mais um degrau de "por quê"
           sobre algo já suficientemente respondido, nem refinamento de precisão
           que a resposta não usa. Cheque a cadeia de origem (I3): se a dúvida
@@ -548,7 +584,10 @@ metadata:
         (1) Alguma linha ainda em EM-VOO? Se sim, você não está na fase 5 —
             volte a esperar (R5).
         (2) Toda linha ABERTA, BLOQUEADA ou RESPONDIDA-FRACA tem preenchido "o
-            que a fecharia"? Se não, preencha antes de seguir.
+            que a fecharia"? Se não, preencha antes de seguir. (Convenção
+            declarada: o portão confere o PREENCHIMENTO da célula, e o
+            conteúdo é texto livre — ninguém verifica se aquilo fecharia
+            mesmo a dúvida.)
         (3) A identidade `A = B + C + G + E + I + H + F` fecha (I5)? Se não, o
             registro está errado — conserte o registro.
         (4) `wc -l research/{{SLUG}}/SOURCES.txt` bate com o último `U(N)`
