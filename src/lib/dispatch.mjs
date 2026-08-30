@@ -76,7 +76,15 @@ export class DispatchError extends Error {
   }
 }
 
-function buildChain(operation, state, flags) {
+// Everything about a REQUEST that can be judged without looking at the key ring
+// or at the cache: the verb has to exist, and --provider has to name the one
+// provider that exists. Split out of buildChain() so dispatch() can run it as
+// its very first act. It used to live below the cache lookup, which meant a
+// flag the tool promises to validate ('--provider tavily') was rejected only
+// when the query happened to MISS the cache: on a hit the request was accepted
+// and answered with Brave results. Validation of the caller's own words must be
+// deterministic, so it now runs before anything is read from disk.
+function assertRequestSupported(operation, flags) {
   const baseChain = capabilityMap[operation];
   if (!Array.isArray(baseChain)) {
     throw new DispatchError(
@@ -93,6 +101,14 @@ function buildChain(operation, state, flags) {
       `--provider '${flags.provider}' does not exist in surf v8. The only search provider is '${SEARCH_PROVIDER}'.`,
     );
   }
+
+  return baseChain;
+}
+
+function buildChain(operation, state, flags) {
+  // Idempotent: dispatch() already ran this before the cache lookup. Kept here
+  // so buildChain() stays correct for any other caller.
+  const baseChain = assertRequestSupported(operation, flags);
 
   const chain = baseChain.filter(p => providerHasUsableKey(state, p));
   if (chain.length === 0) {
@@ -129,6 +145,13 @@ function warnUnsupportedArgs(provider, args) {
 
 export async function dispatch(operation, args, flags = {}, runCtx = {}) {
   const startTs = Date.now();
+
+  // FIRST, before the state file and before the cache: is this request even a
+  // thing surf v8 can do? An unknown verb or an unknown --provider is the
+  // caller's typo, and a typo must fail the same way every time — never
+  // "rejected on a cache miss, honoured on a cache hit".
+  assertRequestSupported(operation, flags);
+
   const harnessBudget = detectHarnessBudgetMs(flags);
   const harnessName = detectHarnessName(flags);
   const unlimited = !Number.isFinite(harnessBudget);
@@ -157,6 +180,10 @@ export async function dispatch(operation, args, flags = {}, runCtx = {}) {
     }
   }
 
+  // Key availability. Deliberately AFTER the cache lookup (see above) and, for
+  // the CLI, after bin/*'s own preflightOrExit(): by the time control reaches
+  // here the request is well-formed and unanswerable from disk, so the only
+  // remaining question is whether we hold a key that can answer it.
   const { chain, pinned } = buildChain(operation, state, flags);
 
   // THE HARD STOP. Nothing below this line runs without a Brave key we have
