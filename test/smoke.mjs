@@ -15,9 +15,10 @@
 //     (2 waves driven by the analyst), against a stubbed OpenRouter + Brave
 //   · graceful degradation when every OpenRouter call fails
 //   · the hard stop: with no Brave key the run raises instead of answering
+//   · the packaging invariant: ONE version number, package.json's, everywhere
 
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -449,6 +450,50 @@ ok('footer present', md.includes('surf-ai `normal`'));
 ok('stop reason present', md.includes('Stopped because'));
 const mdLean = renderMarkdown(normal);
 ok('ledger omitted by default', !mdLean.includes('| Wave |'));
+
+section('packaging: one version number, and it is package.json\'s');
+{
+  const ROOT = path.resolve(path.dirname(SELF), '..');
+  const pkg = JSON.parse(readFileSync(path.join(ROOT, 'package.json'), 'utf8'));
+
+  const { VERSION, BIN_NAMES, UNKNOWN_VERSION } = await import('../src/lib/version.mjs');
+  eq('src/lib/version.mjs reports package.json\'s version', VERSION, pkg.version);
+  ok('...and did not fall back to the unknown marker', VERSION !== UNKNOWN_VERSION);
+  eq('...and lists every bin package.json installs', BIN_NAMES.join(','), Object.keys(pkg.bin).join(','));
+
+  // The header Brave actually sees. buildHeaders is module-private, so go in
+  // through validate()'s ctx shape: version undefined must fall back to ours.
+  const { braveProvider } = await import('../src/lib/providers/brave.mjs');
+  ok('brave adapter exists to stamp X-Client-Name', typeof braveProvider.search === 'function');
+
+  // No file may carry its own copy of the number again. This is the assertion
+  // that makes "bump package.json and nothing else" true tomorrow, not just today.
+  const walk = (dir) => readdirSync(dir, { withFileTypes: true }).flatMap(e => {
+    const full = path.join(dir, e.name);
+    if (e.isDirectory()) return walk(full);
+    return e.isFile() && e.name.endsWith('.mjs') ? [full] : [];
+  });
+  const sources = [...walk(path.join(ROOT, 'bin')), ...walk(path.join(ROOT, 'src'))];
+  const offenders = sources.filter(f => {
+    if (f === path.join(ROOT, 'src', 'lib', 'version.mjs')) return false; // the source itself
+    const text = readFileSync(f, 'utf8');
+    // A literal version assigned to a VERSION-ish const, or spliced into the
+    // X-Client-Name template as a default. Prose in comments ("removed in
+    // v8.0.0") is history and stays.
+    return /(?:const|let|var)\s+\w*VERSION\w*\s*=\s*['"`]\d+\.\d+\.\d+/.test(text) ||
+           /surf-agent-skill\/\$\{[^}]*\|\|\s*['"`]\d+\.\d+\.\d+/.test(text);
+  }).map(f => path.relative(ROOT, f));
+  ok('no bin/ or src/ file hardcodes a version number', offenders.length === 0, offenders.join(', '));
+
+  // SKILL.md front matter is YAML read by the harness: it cannot import
+  // version.mjs, so it is synced by `npm run sync:version` (also run
+  // automatically by `npm version`) and guarded right here.
+  const { auditSkillVersions } = await import('../scripts/sync-version.mjs');
+  for (const r of auditSkillVersions(ROOT)) {
+    ok(`${r.file} metadata.version is ${r.want}`, r.ok,
+      r.found ? `says ${r.value} — run: npm run sync:version` : 'no metadata.version in the front matter');
+  }
+}
 
 // ---------------------------------------------------------------- summary ---
 

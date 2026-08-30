@@ -28,7 +28,7 @@ allowed-tools: Bash(surf-search-normal:*), Bash(surf-research-skill search:*), B
 model: inherit
 effort: medium
 metadata:
-  version: "8.1.0"
+  version: "8.0.1"
   requires: "a VALID BRAVE SEARCH key FIRST (surf-research-skill setup, or surf-research-skill keys add --provider brave <key> - stored in ~/.config/surf/keys.json, or $BRAVE_API_KEY / $BRAVE_API_KEYS, or ./.env): without it EVERY command here exits 78 before it searches anything, and there is no second provider to fall through to; node>=18; npm i -g surf-agent-skill for surf-search-normal + surf-research-skill in PATH; OPTIONALLY an OpenRouter key (surf-research-skill ai-setup) - without it surf-search-normal still exits 0 but degrades to cited EVIDENCE instead of an LLM synthesis, and this skill MUST say so out loud"
 ---
 
@@ -114,10 +114,12 @@ These are the real field names in the `--json` payload (`renderJson`,
    (`src/lib/ai/heuristics.mjs:127`).
 4. **`stop_reason`** — resolved, or out of budget.
 
-> **Do not look for `diagnostics.queriesFailed`.** `references/surf-ai-cli.md`
-> documents that field, but no code ever writes it — the real counter is
-> `ledger.stats.failed`. A check against the documented name silently reads
-> `undefined` and always looks clean.
+> **Do not look for `diagnostics.queriesFailed`.** No code anywhere writes it —
+> the real counter is `ledger.stats.failed`. A check against the ghost name
+> silently reads `undefined`, which is falsy, so "no query failed" and "that
+> field does not exist" look identical and the run always looks clean.
+> `references/surf-ai-cli.md` now lists this name, and the other names nothing
+> writes, under **"Campos que NÃO existem"** — with the real field beside each.
 
 > **MANDATORY — declare degraded mode.** If `synthesized` is `false`, or
 > `diagnostics.degraded` is non-empty, or either `⚠ Degraded` line appears in

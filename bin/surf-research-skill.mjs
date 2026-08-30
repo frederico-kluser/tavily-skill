@@ -25,8 +25,8 @@ import { DEFAULT_SUB_AGENTS, MAX_SUB_AGENTS } from '../src/lib/ai/orchestrator.m
 import { progress, setSilent } from '../src/lib/progress.mjs';
 import { runAiCommand } from '../src/lib/ai/cli.mjs';
 import { runAiSetup } from '../src/lib/ai/setup.mjs';
-
-const VERSION = '8.0.1';
+// Single source of the version number: src/lib/version.mjs reads package.json.
+import { VERSION } from '../src/lib/version.mjs';
 
 // Catch SIGTERM/SIGINT so a harness-driven kill surfaces a useful message
 // instead of dying silently. This is defense-in-depth: dispatch already

@@ -19,9 +19,12 @@ import { assertSearchReady } from './preflight.mjs';
 import { guardExpensive } from './cost.mjs';
 import { sleep } from './flags.mjs';
 import { progress } from './progress.mjs';
+// The version stamped onto X-Client-Name of every Brave request. It is read
+// from package.json, not retyped here: a client name that lies about which
+// release is talking is worse than no client name at all.
+import { VERSION } from './version.mjs';
 
 const CACHEABLE = new Set(['search']);
-const VERSION = '8.0.0';
 // After a key exhausts its 429 retries, sideline it for this long (persisted)
 // so we stop hammering a rate-limited key now and on the next process run.
 const RATE_LIMIT_COOLDOWN_MS = Number(process.env.SURF_RATE_LIMIT_COOLDOWN_MS) || 60_000;

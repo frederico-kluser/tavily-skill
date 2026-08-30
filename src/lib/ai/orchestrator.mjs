@@ -47,7 +47,8 @@ import {
 } from './prompts.mjs';
 import { heuristicPlan, heuristicAnalysis, heuristicSynthesis } from './heuristics.mjs';
 
-const VERSION = '8.0.0';
+// (No VERSION const here on purpose: this module never used one. The single
+// source, for anything that does, is src/lib/version.mjs.)
 
 export const MODES = ['normal', 'unlimit'];
 

@@ -23,17 +23,18 @@ import { fileURLToPath } from 'node:url';
 
 import { loadState, saveStateAtomic, setValidation, KEYS_FILE, PROVIDERS, SEARCH_PROVIDERS } from '../src/lib/state.mjs';
 import { validateKey, formatValidation } from '../src/validators/index.mjs';
-// Namespace import on purpose: SKILLS is not (yet) exported, and a named
-// import of a missing binding is a link-time SyntaxError, not a runtime
-// `undefined`. This way canonicalSkillNames() can prefer it the day it is.
+// Namespace import on purpose. SKILLS IS exported now, but a named import of a
+// binding that ever goes away is a link-time SyntaxError — the whole CLI dies,
+// not just the doctor. Through the namespace, a missing SKILLS is a plain
+// `undefined` and canonicalSkillNames() falls through to its next tier.
 import * as harnessInstall from '../src/lib/harness-install.mjs';
 import { gateStatus, resolveGate, GATE, formatGate, EXIT_CONFIG } from '../src/lib/preflight.mjs';
 import { runAiSetup } from '../src/lib/ai/setup.mjs';
 import { keysFromEnv, PRIMARY_MODEL } from '../src/lib/ai/openrouter.mjs';
+// Single source of the version number: src/lib/version.mjs reads package.json.
+import { VERSION } from '../src/lib/version.mjs';
 
 const { HARNESS_DIRS } = harnessInstall;
-
-const VERSION = '8.0.0';
 
 const PKG_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const HARNESS_INSTALL_SRC = path.join(PKG_ROOT, 'src', 'lib', 'harness-install.mjs');
@@ -106,11 +107,14 @@ function fmtBytes(n) {
  * install that was missing a skill entirely. A second copy of a list is a
  * second thing to forget.
  *
- * SKILLS is not exported (harness-install.mjs belongs to the installer, and
- * this wave may not edit it), so this derives it, in order of authority:
- *   1. the export, the day it exists — nothing to parse, nothing to drift;
- *   2. the SKILLS literal read out of that module's SOURCE — still the one
- *      canonical list, just fetched the awkward way;
+ * Three tiers, in order of authority:
+ *   1. `harnessInstall.SKILLS` — the export itself. THIS is the tier that runs
+ *      today: harness-install.mjs exports the array, so the doctor reads the
+ *      exact object the installer loops over. Nothing to parse, nothing to
+ *      drift. `surf doctor` names the tier it used, so a regression is visible.
+ *   2. the SKILLS literal read out of that module's SOURCE — the same
+ *      canonical list, fetched the awkward way. Kept as the belt for a build
+ *      where the export is gone or renamed.
  *   3. last resort, the package layout the installer walks: the root skill
  *      plus every directory under skills/. Only reachable if the file cannot
  *      be read at all, and it keeps a blind doctor from being a silent one.

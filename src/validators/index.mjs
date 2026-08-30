@@ -17,12 +17,14 @@
 
 import { braveProvider } from '../lib/providers/brave.mjs';
 import { validateOpenRouterKey } from '../lib/ai/openrouter.mjs';
+// Single source of the version number: src/lib/version.mjs reads package.json.
+// It rides along on the validation request's X-Client-Name.
+import { VERSION } from '../lib/version.mjs';
 
 const ADAPTERS = {
   brave: braveProvider,
 };
 
-const VERSION = '8.0.0';
 const VALIDATION_QUERY = 'surf-agent-skill key validation ping';
 const TIMEOUT_MS = 20_000;
 

@@ -34,6 +34,8 @@
     "postinstall": "node ./src/install/postinstall.mjs || true",
     "preuninstall": "node ./src/install/preuninstall.mjs || true",
     "build": "npm run test:syntax",
+    "sync:version": "node ./scripts/sync-version.mjs",
+    "version": "node ./scripts/sync-version.mjs && git add SKILL.md skills/surf-plan-agent-skill/SKILL.md skills/surf-search-agent-skill/SKILL.md",
     "predev": "npm run build",
     "dev": "node ./bin/surf.mjs",
     "predev:search": "npm run build",
@@ -48,7 +50,7 @@
     "dev:install": "SURF_DEV=1 node ./src/install/postinstall.mjs",
     "dev:uninstall": "SURF_DEV=1 node ./src/install/preuninstall.mjs",
     "test": "npm run test:syntax || exit 1; bad=''; for f in ./test/smoke.mjs ./test/brave.mjs; do echo ''; echo \"== $f\"; node \"$f\" || bad=\"$bad $f\"; done; echo ''; npm run --silent test:adversarial || bad=\"$bad test:adversarial\"; if [ -n \"$bad\" ]; then echo \"GATE RED, failed:$bad\"; exit 1; fi; echo 'GATE GREEN'; exit 0",
-    "test:syntax": "for f in bin/*.mjs src/index.mjs src/env.mjs src/install/*.mjs src/lib/*.mjs src/lib/ai/*.mjs src/lib/providers/*.mjs src/lib/api/*.mjs src/plan/*.mjs src/validators/*.mjs; do node --check \"$f\" || exit 1; done && echo syntax-ok",
+    "test:syntax": "for f in bin/*.mjs scripts/*.mjs src/index.mjs src/env.mjs src/install/*.mjs src/lib/*.mjs src/lib/ai/*.mjs src/lib/providers/*.mjs src/lib/api/*.mjs src/plan/*.mjs src/validators/*.mjs; do node --check \"$f\" || exit 1; done && echo syntax-ok",
     "test:adversarial": "bad=''; n=0; for f in ./test/adversarial/*.mjs; do [ -f \"$f\" ] || continue; n=$((n+1)); echo ''; echo \"== $f\"; node \"$f\" || bad=\"$bad $f\"; done; if [ \"$n\" -eq 0 ]; then echo 'no adversarial suite found under test/adversarial/'; exit 1; fi; if [ -n \"$bad\" ]; then echo \"ADVERSARIAL RED, failed:$bad\"; exit 1; fi; echo \"adversarial GREEN ($n suites)\"; exit 0"
   },
   "engines": {

@@ -221,7 +221,14 @@ export async function unlinkIfOurs(link, expectedTarget) {
 //
 // Each harness gets one symlink per skill (e.g. ~/.claude/skills/surf-research-agent-skill,
 // …/surf-plan-agent-skill, …/surf-search-agent-skill; same for .agents/.codex/.pi).
-const SKILLS = [
+//
+// EXPORTED because two other places need the same list and both were deriving
+// it the hard way: `surf doctor` (bin/surf.mjs, canonicalSkillNames) used to
+// regex this literal out of THIS FILE'S SOURCE, and the postinstall banner
+// hand-counted it — and announced "2 skills" for a while after the third one
+// shipped. Exporting is pure addition: shape and contents are untouched, and
+// it retires the source-scraping fallback.
+export const SKILLS = [
   { name: 'surf-research-agent-skill', subdir: null },                            // root of package
   { name: 'surf-plan-agent-skill',     subdir: 'skills/surf-plan-agent-skill' },
   { name: 'surf-search-agent-skill',   subdir: 'skills/surf-search-agent-skill' },

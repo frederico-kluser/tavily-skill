@@ -23,7 +23,7 @@ license: MIT
 argument-hint: "[task to plan, e.g. 'add rate limiting to the Express API']"
 allowed-tools: Bash(surf-search-normal:*), Bash(surf-search-unlimit:*), Bash(surf-research-skill:*), Bash(surf-plan-skill:*), Read, Glob, Grep, Write, Edit, WebSearch, WebFetch, AskUserQuestion
 metadata:
-  version: "8.0.0"
+  version: "8.0.1"
   requires: "a VALID BRAVE SEARCH key FIRST (surf-research-skill setup — stored in ~/.config/surf/keys.json, or $BRAVE_API_KEY / $BRAVE_API_KEYS, or ./.env): without it EVERY research command exits 78 before it searches anything, and there is no second provider to fall through to; node>=18; surf-search-normal + surf-research-skill in PATH (npm i -g surf-agent-skill) for Layer A research; OPTIONALLY an OpenRouter key (surf-research-skill ai-setup) for surf-ai synthesis — without it Layer A still exits 0 in degraded mode, returning cited evidence with a deterministic plan instead of an LLM one; harness WebSearch/WebFetch as Layer B, for the single case where the harness denies Bash — never as a stand-in for the Brave key; plan dir at ~/.claude/plans/ (or ./plans/ if it exists in the project)"
 ---
 

@@ -50,6 +50,10 @@ import { compactObject, intOr, splitList } from '../flags.mjs';
 import { stripHtml } from '../html.mjs';
 import { acquireSlot, learnFromHeaders, learnFromBody, resetDelayMs } from '../ratelimit.mjs';
 import { progress } from '../progress.mjs';
+// Default for the X-Client-Name version when a caller does not pass one.
+// Read from package.json (src/lib/version.mjs), never retyped: this header is
+// what Brave sees on every single request we make.
+import { VERSION } from '../version.mjs';
 
 const BASE = process.env.SURF_BRAVE_API_BASE || 'https://api.search.brave.com/res/v1';
 const DEFAULT_TIMEOUT = Number(process.env.SURF_TIMEOUT_MS) || 45000;
@@ -96,7 +100,7 @@ function buildHeaders(key, version) {
     'X-Subscription-Token': key,
     'Accept': 'application/json',
     'Accept-Encoding': 'gzip',
-    'X-Client-Name': `surf-agent-skill/${version || '8.0.0'}`,
+    'X-Client-Name': `surf-agent-skill/${version || VERSION}`,
   };
 }
 

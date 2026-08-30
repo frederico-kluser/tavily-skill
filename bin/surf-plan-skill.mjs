@@ -9,9 +9,8 @@ import { listPlans, readPlan, newPlanStub } from '../src/plan/plan-file.mjs';
 import { slugify } from '../src/plan/slug.mjs';
 import { checkSurfSkill } from '../src/lib/check-surf-skill.mjs';
 import { formatGate, EXIT_CONFIG } from '../src/lib/preflight.mjs';
-
-// NOTE: drifted from package.json (8.0.1) — unified separately; see package.json.
-const VERSION = '8.0.0';
+// Single source of the version number: src/lib/version.mjs reads package.json.
+import { VERSION } from '../src/lib/version.mjs';
 
 const HELP = `surf-plan-skill — research-grounded execution planning skill
 

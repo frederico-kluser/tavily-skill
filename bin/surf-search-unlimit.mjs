@@ -15,8 +15,8 @@ import { setSilent } from '../src/lib/progress.mjs';
 import { runAiCommand, reportAiError } from '../src/lib/ai/cli.mjs';
 import { migrateLegacy } from '../src/lib/state.mjs';
 import { preflightOrExit } from '../src/lib/preflight.mjs';
-
-const VERSION = '8.0.0';
+// Single source of the version number: src/lib/version.mjs reads package.json.
+import { VERSION } from '../src/lib/version.mjs';
 
 const HELP = `surf-search-unlimit — autonomous web research, AS MANY ROUNDS AS NEEDED
 
