@@ -175,6 +175,25 @@ function queueSave(fn) {
   return run;
 }
 
+/**
+ * Age of a stored validation timestamp, measured unilaterally — the same
+ * clock discipline ratelimit.mjs has used since its second wave
+ * (windowTimestamps / resolveRps): a stamp AHEAD of now is not a verdict
+ * from the future, it is a clock that moved (an NTP step, a laptop resume, a
+ * hand edit), so it is clamped to `now` (age 0) while it stays within one
+ * TTL of ahead — and beyond that it cannot describe a verdict this key
+ * earned in this TTL, so it is stale. A stamp that does not parse is stale
+ * too. One boundary, shared by the prune in normalizeProvider and the hit
+ * test in getValidation: an entry is trusted iff `age < VALIDATION_TTL_MS`.
+ */
+function validationAge(at, now) {
+  const atMs = new Date(at).getTime();
+  if (!Number.isFinite(atMs)) return Infinity;
+  const age = now - atMs;
+  if (age < -VALIDATION_TTL_MS) return Infinity;
+  return age < 0 ? 0 : age;
+}
+
 function normalizeProvider(p) {
   const obj = p && typeof p === 'object' ? p : {};
   const now = Date.now();
@@ -190,13 +209,15 @@ function normalizeProvider(p) {
           && typeof c.until === 'string' && new Date(c.until).getTime() > now)
       : [],
     // Cached live-validation verdicts, so the "is this key valid?" gate does not
-    // pay a round-trip on every invocation. Entries older than the TTL are
-    // pruned here, which is also what makes the TTL authoritative in one place.
+    // pay a round-trip on every invocation. Entries whose unilateral age has
+    // reached the TTL are pruned here — which is also what makes the TTL
+    // authoritative in one place. getValidation MUST use the same boundary
+    // (validationAge), or the same verdict is live in memory and dead on disk.
     // NOTE: this object literal is a WHITELIST — a field not listed here is
     // silently dropped by the next saveStateAtomic.
     validated: Array.isArray(obj.validated)
       ? obj.validated.filter(v => v && typeof v === 'object' && Number.isInteger(v.index)
-          && typeof v.at === 'string' && now - new Date(v.at).getTime() < VALIDATION_TTL_MS)
+          && typeof v.at === 'string' && validationAge(v.at, now) < VALIDATION_TTL_MS)
       : [],
   };
 }
@@ -230,8 +251,13 @@ export function getValidation(state, provider, index) {
   if (!p || !Array.isArray(p.validated)) return null;
   const hit = p.validated.find(v => v && v.index === index);
   if (!hit) return null;
-  const at = new Date(hit.at).getTime();
-  if (!Number.isFinite(at) || Date.now() - at > VALIDATION_TTL_MS) return null;
+  // The same unilateral boundary as the normalizeProvider prune, stale the
+  // moment the unilateral age reaches the TTL in EITHER direction: an old
+  // verdict AND one the clock says is in the future — a `at` ten years ahead
+  // must not make the gate trust a revoked key forever (P1, S2). The strict
+  // `>=` is what makes the two comparisons agree to the millisecond at
+  // exactly TTL.
+  if (validationAge(hit.at, Date.now()) >= VALIDATION_TTL_MS) return null;
   return hit;
 }
 
@@ -264,7 +290,12 @@ function applyMonthlyReset(state) {
     if (!sec || !Array.isArray(sec.burned)) continue;
     sec.burned = sec.burned.filter(b => {
       const at = new Date(b && b.at);
-      if (Number.isNaN(at.getTime())) return false;
+      // An undated (or unparseable) burn has no month to compare — that is
+      // NOT a reset signal (S5). Dropping it would silently un-burn a key the
+      // system proved dead; a burn clears by month rollover or by
+      // `keys reset` only. It stays, and explainUnusable renders it honestly
+      // ("at unknown; auto-resets —").
+      if (Number.isNaN(at.getTime())) return true;
       return !(nowY > at.getUTCFullYear() || (nowY === at.getUTCFullYear() && nowM > at.getUTCMonth()));
     });
     // current may now point to a slot that became usable again — leave as-is;

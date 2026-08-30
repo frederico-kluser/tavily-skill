@@ -278,15 +278,24 @@ section('gate: Q1 — READY for a key that does not work');
   bug('P1', 'a validation verdict dated in the future never expires — the gate trusts it forever',
     g.verdict === GATE.READY && live.verdict === GATE.READY,
     'src/lib/state.mjs:127 (Date.now()-at > TTL) and :101 (now-at < TTL) both accept a negative age');
-  ok('and the poisoned verdict survives a round-trip through keys.json', await (async () => {
+  const roundTripLen = await (async () => {
     await seed(['revoked-months-ago']);
     const disk = await S.loadState();
     S.setValidation(disk, 'brave', 0, { ok: true });
     disk.brave.validated[0].at = new Date(Date.now() + 10 * 365 * 24 * 3600 * 1000).toISOString();
     await S.saveStateAtomic(disk);
-    const back = await S.loadState();
-    return (back.brave.validated || []).length === 1;
-  })());
+    return ((await S.loadState()).brave.validated || []).length;
+  })();
+  // NOT a contract. This used to be an ok(), and its own description — a
+  // "poisoned verdict" SURVIVING a round-trip through keys.json — asserted
+  // the P1 defect as if it were correct behaviour: no implementation can
+  // both fix P1 (a verdict stamped beyond the TTL in the future must not be
+  // trusted) and keep that entry alive through a save. The condition is
+  // UNCHANGED; `roundTripLen === 1` reads as FIXED instead of failing the
+  // suite (the same conversion the audit applied to BUG-21b).
+  bug('P1b', 'the SAME defect as P1 reached through its second entry point: a poisoned verdict survives a round-trip through keys.json',
+    roundTripLen === 1,
+    `src/lib/state.mjs:197 prunes it (validationAge discards a stamp beyond the TTL ahead) → validated.length=${roundTripLen} after the round-trip`);
 }
 {
   // allowLive:false converts "we have never checked this key" into READY.
