@@ -132,6 +132,20 @@ export class Frontier {
     if (this.admittedKeys.has(key)) return this.#reject(node, 'duplicate of a query already admitted');
     if (node.depth > this.maxDepth) return this.#reject(node, `deeper than the depth cap (${this.maxDepth})`);
     if (this.closed.has(node.sub)) return this.#reject(node, `branch '${node.sub}' is already closed`);
+    // A priority that is not a number is refused, never defaulted. The floor
+    // below is a `<` comparison, and every comparison against undefined or NaN
+    // is false — so a node with no priority did not merely skip the floor, it
+    // sailed through a gate that reported it had checked. It then reached the
+    // sort, where `b.priority - a.priority` is NaN: a comparator that answers
+    // NaN is inconsistent, the spec leaves the resulting order unspecified, and
+    // the whole wave comes out in an arbitrary sequence — the one part of this
+    // class whose entire job is to decide what gets asked first.
+    //
+    // Defaulting it here would be worse than refusing: it would invent a
+    // ranking for a node whose ranking nobody stated, and hide the caller that
+    // is not building nodes properly. makeNode() clamps every priority to a
+    // number, so anything arriving here without one bypassed it.
+    if (!Number.isFinite(node.priority)) return this.#reject(node, `priority ${String(node.priority)} (${typeof node.priority}) is not a number`);
     if (node.priority < this.minPriority) return this.#reject(node, `priority ${node.priority} below the admission threshold`);
 
     // One id is one query, for the whole run: the ledger table, the [id]

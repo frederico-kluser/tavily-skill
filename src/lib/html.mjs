@@ -8,10 +8,20 @@
 //
 // ORDER OF OPERATIONS — this is the whole argument of the file:
 //
+//   0. delete the control bytes that are not text (C0 and DEL, keeping the
+//      three that are whitespace);
 //   1. strip the markup that is REALLY in the input (comments, script/style
 //      bodies, tags);
 //   2. decode entities ONCE (single pass, so `&amp;lt;` stays `&lt;`);
 //   3. neutralise anything TAG-SHAPED that step 2 just materialised.
+//
+// Step 0 is FIRST, and that position is load-bearing in the same way step 3's
+// is. A control byte is invisible to every rule below it, so `<\x00script>`
+// reads as prose to step 1 — and deleting the NUL after step 3 would hand the
+// caller a live `<script>` the gate had just certified was absent. Removed
+// before anything parses, the same input is simply a script tag and is stripped
+// as one. Entities cannot smuggle one past step 0 either: safeChar refuses to
+// materialise a control at step 2, so `&#0;` decodes to nothing at all.
 //
 // Step 3 is the step a naive sanitiser is missing, and its absence is the
 // classic sanitiser bug: strip-then-decode turns `&lt;script&gt;` into a live
@@ -43,7 +53,13 @@ const ENTITIES = {
 };
 
 export function decodeEntities(s) {
-  if (typeof s !== 'string' || !s.includes('&')) return s || '';
+  // Text in, text out — documented, and now actually true. A non-string used to
+  // be handed straight back, so decodeEntities(123) returned the NUMBER 123 and
+  // the caller only found out at its next `.replace`, a stack frame away from
+  // the mistake. stripHtml has answered '' to a non-string all along; this is
+  // the same answer, given by the same file.
+  if (typeof s !== 'string') return '';
+  if (!s.includes('&')) return s;
   return s
     .replace(/&#x([0-9a-f]+);/gi, (_, h) => safeChar(parseInt(h, 16)))
     .replace(/&#(\d+);/g, (_, d) => safeChar(parseInt(d, 10)))
@@ -53,8 +69,19 @@ export function decodeEntities(s) {
     });
 }
 
+// C0 controls and DEL are bytes, not text. Snippets reach a JSON ledger and an
+// LLM prompt: a NUL terminates the string in any C consumer downstream, and the
+// rest are invisible on the way there — so a decoded `&#0;` corrupts evidence
+// no reader can see is corrupted. The three C0 codes that are genuinely
+// whitespace (TAB, LF, CR) are text and stay.
+function isControlCode(code) {
+  return (code < 0x20 && code !== 0x09 && code !== 0x0a && code !== 0x0d) || code === 0x7f;
+}
+const CONTROL_CHARS = /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g;
+
 function safeChar(code) {
   if (!Number.isFinite(code) || code < 0 || code > 0x10ffff) return '';
+  if (isControlCode(code)) return '';
   try { return String.fromCodePoint(code); } catch { return ''; }
 }
 
@@ -111,10 +138,13 @@ function neutralizeTags(s) {
     .replace(TAG_OPEN, '&lt;');
 }
 
-/** Strip tags, decode entities, collapse whitespace. Never returns null. */
+/**
+ * Drop control bytes, strip tags, decode entities, collapse whitespace.
+ * Never returns null, and never returns a control character either.
+ */
 export function stripHtml(s) {
   if (typeof s !== 'string' || !s) return '';
-  return neutralizeTags(decodeEntities(stripTags(s)))
+  return neutralizeTags(decodeEntities(stripTags(s.replace(CONTROL_CHARS, ''))))
     .replace(/[ \t]+/g, ' ')
     .replace(/\n{3,}/g, '\n\n')
     .trim();
