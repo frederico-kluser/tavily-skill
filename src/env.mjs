@@ -1,12 +1,16 @@
 // Key discovery for library mode.
-// Priority (each level can contribute; results merged + deduped):
+// Priority: levels 1-3 each contribute, and their results are merged + deduped:
 //   1. Explicit opts (opts.braveKey / opts.braveKeys / openrouter*)
 //   2. process.env  (BRAVE_API_KEYS comma-separated + BRAVE_API_KEY,
 //                    OPENROUTER_API_KEYS + OPENROUTER_API_KEY)
 //   3. .env file at process.cwd() (lightweight regex parser, no dotenv dep)
-//   4. ~/.config/surf/keys.json (CLI persistent store, fallback only)
+// Level 4 — ~/.config/surf/keys.json, the CLI's persistent store — is a
+// FALLBACK ONLY: it is consulted per provider just when levels 1-3 produced
+// nothing for that provider, and its keys are never merged next to keys the
+// caller already supplied. The caller's explicit choice wins; the store only
+// speaks when nobody else did.
 
-import { existsSync, promises as fs } from 'node:fs';
+import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { loadState, PROVIDERS } from './lib/state.mjs';
 import { progress } from './lib/progress.mjs';
@@ -27,7 +31,15 @@ const WATCHED = new Set(PROVIDERS.flatMap((p) => {
   return [`${base}_API_KEY`, `${base}_API_KEYS`];
 }));
 
-const ENV_FILE_CACHE = new Map();
+// The exact names, indexed case-insensitively, so a .env that spells a watched
+// variable with the wrong case gets a diagnosis instead of silence. Discovery
+// stays case-sensitive (see loadDotenv) — this map exists only for the warning.
+const WATCHED_CI = new Map([...WATCHED].map((w) => [w.toLowerCase(), w]));
+
+// Parsed .env content per directory, revalidated against the file's mtime and
+// size on every read. A rewritten .env must become visible to a long-lived
+// process (D2); the stat gate keeps the cache cheap when nothing changed.
+const ENV_FILE_CACHE = new Map(); // dir -> { key: `${mtimeMs}:${size}`|'missing', out }
 
 // A misdiscovered key is invisible at the call site: the caller sees "no valid
 // key, exit 78" while the key sits in the file, spelled correctly. Every branch
@@ -102,10 +114,16 @@ function trimTrailing(s) {
 }
 
 async function loadDotenv(dir) {
-  if (ENV_FILE_CACHE.has(dir)) return ENV_FILE_CACHE.get(dir);
   const p = path.join(dir, '.env');
+  const cached = ENV_FILE_CACHE.get(dir);
+  // stat() follows the same path existsSync() used to: absent file and
+  // unreadable path both land here without killing readFile's own diagnostics.
+  let st = null;
+  try { st = await fs.stat(p); } catch { /* absent or unreadable */ }
+  const key = st ? `${st.mtimeMs}:${st.size}` : 'missing';
+  if (cached && cached.key === key) return cached.out;
   const out = {};
-  if (existsSync(p)) {
+  if (st) {
     try {
       const txt = await fs.readFile(p, 'utf8');
       for (const line of txt.split(/\r\n|\r|\n/)) {
@@ -114,7 +132,16 @@ async function loadDotenv(dir) {
         const [, name, raw] = m;
         const { value, warning } = parseValue(raw);
         out[name] = value;
-        if (!WATCHED.has(name)) continue;
+        if (!WATCHED.has(name)) {
+          // A lower- or mixed-case spelling of a watched name is a different
+          // variable than the one discovery reads — .env is parsed with shell
+          // semantics, where BRAVE_API_KEY and brave_api_key are distinct —
+          // but it is exactly the "my key is right there" report when we stay
+          // silent. The parse stays case-sensitive; the warning is the fix.
+          const canonical = WATCHED_CI.get(name.toLowerCase());
+          if (canonical) warn(`${name} in ${p} is not ${canonical}: variable names are case-sensitive, so this value is ignored — use ${canonical}`);
+          continue;
+        }
         if (warning) warn(`${name} in ${p}: ${warning}`);
         else if (!value) warn(`${name} in ${p} is assigned but empty`);
       }
@@ -125,7 +152,7 @@ async function loadDotenv(dir) {
       warn(`${p} could not be read (${e.code || e.message}); continuing with the other sources`);
     }
   }
-  ENV_FILE_CACHE.set(dir, out);
+  ENV_FILE_CACHE.set(dir, { key, out });
   return out;
 }
 
@@ -178,8 +205,20 @@ function readFromObject(obj, base) {
 }
 
 // opts.braveKey / opts.braveKeys — camelCase option names per provider.
+// Mirror of the env level: the plural form splits on commas (BRAVE_API_KEYS
+// is CSV, so opts.braveKeys = 'k1,k2' must mean the same two keys), the
+// singular form does not (BRAVE_API_KEY holds one key). Non-string entries
+// pass through for sanitizeKeys to warn and drop.
 function explicitFor(opts, provider) {
-  return [...arrayify(opts[`${provider}Key`]), ...arrayify(opts[`${provider}Keys`])];
+  const out = [];
+  const single = opts[`${provider}Key`];
+  const plural = opts[`${provider}Keys`];
+  if (Array.isArray(single)) out.push(...single.filter(Boolean));
+  else if (single) out.push(single);
+  if (Array.isArray(plural)) out.push(...plural.filter(Boolean));
+  else if (typeof plural === 'string') out.push(...splitCsv(plural));
+  else if (plural) out.push(plural);
+  return out;
 }
 
 /**
@@ -229,7 +268,14 @@ export async function discoverKeys(opts = {}) {
 
   const out = {};
   for (const p of PROVIDERS) {
-    out[p] = [...new Set([...explicit[p], ...env[p], ...dotenv[p], ...cfg[p]])];
+    const arr = [...new Set([...explicit[p], ...env[p], ...dotenv[p], ...cfg[p]])];
+    // Provenance marker for buildInMemoryState: which of these values actually
+    // came from keys.json (level 4) in THIS call. Non-enumerable so join,
+    // spread, JSON.stringify and array consumers never see it. Burn history
+    // (a verdict the CLI already paid for) follows only store-supplied keys;
+    // cooldowns and validation verdicts match by value regardless of source.
+    Object.defineProperty(arr, '_fromCfg', { value: new Set(cfg[p]), enumerable: false });
+    out[p] = arr;
   }
   return out;
 }
@@ -243,10 +289,13 @@ export async function discoverKeys(opts = {}) {
  * re-used a key the CLI had already proved dead and paid a round-trip to learn
  * it again on every call.
  *
- * The carry-over matches on key VALUE, never on index: discoverKeys merges four
+ * The carry-over matches on key VALUE, never on index: discoverKeys merges the
  * sources through a Set, so positions in the merged array have nothing to do
- * with positions in keys.json. Keys that arrived from opts/env have no history
- * and start clean, which is correct.
+ * with positions in keys.json. Cooldowns and validation verdicts follow the
+ * key value wherever it appears. Burn is narrower and provenance-aware: it is
+ * the CLI's proof that a key is dead, so it only follows keys that actually
+ * came FROM keys.json (level 4) in this call — an identical value supplied via
+ * opts/env/.env starts clean, exactly as the caller asked for it fresh.
  */
 export async function buildInMemoryState(opts = {}) {
   const discovered = await discoverKeys(opts);
@@ -265,15 +314,25 @@ export async function buildInMemoryState(opts = {}) {
     const validated = [];
 
     if (src && Array.isArray(src.keys) && src.keys.length) {
-      const oldIndexOf = new Map(src.keys.map((k, i) => [k, i]));
+      // src.keys can hold the same value twice (a hand-edited keys.json). A
+      // value->index Map would keep only the LAST occurrence and silently drop
+      // a burn recorded against the first, so each value maps to the LIST of
+      // every index it occupies; an entry matching any of them follows the key.
+      const oldIndexOf = new Map();
+      src.keys.forEach((k, i) => {
+        const list = oldIndexOf.get(k);
+        if (list) list.push(i);
+        else oldIndexOf.set(k, [i]);
+      });
+      const fromCfg = discovered[p]._fromCfg || null;
       keys.forEach((k, newIdx) => {
-        const oldIdx = oldIndexOf.get(k);
-        if (oldIdx === undefined) return;
-        const b = (src.burned || []).find(x => x.index === oldIdx);
+        const oldIdxs = oldIndexOf.get(k);
+        if (!oldIdxs) return;
+        const b = (src.burned || []).find(x => x.index !== undefined && fromCfg && fromCfg.has(k) && oldIdxs.includes(x.index));
         if (b) burned.push({ ...b, index: newIdx });
-        const c = (src.cooldowns || []).find(x => x.index === oldIdx);
+        const c = (src.cooldowns || []).find(x => x.index !== undefined && oldIdxs.includes(x.index));
         if (c) cooldowns.push({ ...c, index: newIdx });
-        const v = (src.validated || []).find(x => x.index === oldIdx);
+        const v = (src.validated || []).find(x => x.index !== undefined && oldIdxs.includes(x.index));
         if (v) validated.push({ ...v, index: newIdx });
       });
     }
