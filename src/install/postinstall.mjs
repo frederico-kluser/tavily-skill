@@ -68,7 +68,7 @@ async function main() {
   if (skel.created) process.stdout.write(`✓ created ${skel.created} (chmod 600)\n`);
 
   process.stdout.write('\n');
-process.stdout.write('✓ surf-agent-skill 8.0.0 installed globally — 2 skills + 5 bins:\n');
+process.stdout.write('✓ surf-agent-skill 8.0.0 installed globally — 3 skills + 5 bins:\n');
   process.stdout.write('    surf                  interactive setup with live key validation\n');
   process.stdout.write('    surf-research-skill   Brave web search: one query, a batch, or a\n');
   process.stdout.write('                          paced parallel fan-out\n');

@@ -630,7 +630,7 @@ section('harness-install: install / uninstall round trip');
   const d = box('roundtrip');
   const pkg = fakePkg(d);
   const res = await hi.installSkill(pkg);
-  eq('two skills into four harness dirs', res.filter(r => r.action === 'symlinked').length, 8);
+  eq('three skills into four harness dirs', res.filter(r => r.action === 'symlinked').length, 12);
   for (const dir of hi.HARNESS_DIRS) {
     ok(`${path.basename(path.dirname(dir))}: root skill linked`,
       readlinkSync(path.join(dir, 'surf-research-agent-skill')) === pkg);
@@ -680,8 +680,8 @@ section('harness-install: install / uninstall round trip');
     const res = await hi.installSkill(pkg);
     const bad = res.filter(x => x.action === 'error');
     eq('an unwritable harness dir is reported as one error', bad.length, 1);
-    ok('...and the other three dirs still receive both skills',
-      res.filter(x => x.action === 'symlinked').length === 6);
+    ok('...and the other three dirs still receive all three skills',
+      res.filter(x => x.action === 'symlinked').length === 9);
     chmodSync(dir, 0o755);
     for (const dd of hi.HARNESS_DIRS) rmSync(dd, { recursive: true, force: true });
   }

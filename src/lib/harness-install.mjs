@@ -141,12 +141,18 @@ export async function unlinkIfOurs(link, expectedTarget) {
 //   - surf-plan-agent-skill     → pkgRoot/skills/surf-plan-agent-skill/ (planning workflow; auto-routes
 //                                                                   into an ambiguity-sweep mode for
 //                                                                   high-stakes/vague work)
+//   - surf-search-agent-skill   → pkgRoot/skills/surf-search-agent-skill/ (the SHALLOW half of the
+//                                                                   research pair: ONE independent
+//                                                                   question, one surf-search-normal
+//                                                                   call, no sub-agents and nothing
+//                                                                   written to disk)
 //
 // Each harness gets one symlink per skill (e.g. ~/.claude/skills/surf-research-agent-skill,
-// …/surf-plan-agent-skill; same for .agents/.codex/.pi).
+// …/surf-plan-agent-skill, …/surf-search-agent-skill; same for .agents/.codex/.pi).
 const SKILLS = [
   { name: 'surf-research-agent-skill', subdir: null },                            // root of package
   { name: 'surf-plan-agent-skill',     subdir: 'skills/surf-plan-agent-skill' },
+  { name: 'surf-search-agent-skill',   subdir: 'skills/surf-search-agent-skill' },
 ];
 
 export async function installSkill(pkgRoot) {

@@ -10,10 +10,17 @@ description: >-
   synthesize) and continuous-burst (new bursts until saturation, questioning
   its own answers). In both modes, a context burst consults the calling
   conversation and the repository before any web search. Each sub-agent uses
-  the surf-ai CLI and returns a structured handoff. Triggers on: pesquise,
-  investigue, busca na web, ache tudo sobre, levantamento completo, pesquisa
-  profunda, compare X e Y, search the web, research, investigate, deep dive,
-  find everything about, compare X vs Y. Not for local files, git, code
+  the surf-ai CLI and returns a structured handoff. Use it when answering
+  needs MORE THAN ONE independent question — when the sub-questions depend on
+  each other and each answer rewrites the next question. Triggers on: ache
+  tudo sobre, levantamento completo, pesquisa profunda, panorama de, todas as
+  opções de, compare X, Y e Z, não deixe nada em aberto, deep dive, find
+  everything about, exhaustive research, leave nothing open. DO NOT use for
+  ONE independent question with ONE verifiable answer — a version, a number, a
+  date, a price, "is this still true?", or comparing two options on a SINGLE
+  axis: that is surf-search-agent-skill, which answers in one cited call and
+  writes nothing, while this skill fires at least 6 sub-agents and leaves
+  three files plus a git commit behind. Not for local files, git, code
   editing, or writing execution plans — for planning, use
   surf-plan-agent-skill. Not for reading a specific URL either: Brave returns
   ranked links and snippets, never page content.
