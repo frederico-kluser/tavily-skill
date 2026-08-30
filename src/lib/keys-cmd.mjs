@@ -29,6 +29,96 @@ function requireProvider(flags, allowAll = false) {
   return p;
 }
 
+// ---------------------------------------------------------------- masking ---
+//
+// EVERY value this module hands back to a caller is masked. Not just
+// `keys list --json` — v8.0.1 wired the mask into `list` alone and left `add`,
+// `remove` and `reset` printing `JSON.stringify(result)` with the raw key in
+// it. This package exists to be driven by AI agents: its stdout lands in
+// transcripts, handoff files and task plans that are read back, committed, and
+// pasted into other models' context. A key on stdout is a leaked key.
+//
+// The one opt-out is `--unsafe-show-keys`, handled by the callers below.
+
+/** Keys shorter than this are not searched for inside free text: too noisy. */
+const REDACT_MIN_LEN = 8;
+
+/** Every key the state knows about, across providers, longest first. */
+function allKeys(state) {
+  const out = [];
+  for (const p of PROVIDERS) {
+    const pp = (state && state[p]) || {};
+    if (Array.isArray(pp.keys)) {
+      for (const k of pp.keys) if (typeof k === 'string' && k) out.push(k);
+    }
+  }
+  // Longest first so a key that is a prefix of another cannot mask it early.
+  return out.sort((a, b) => b.length - a.length);
+}
+
+/** Replace every occurrence of a real key inside free text with its mask. */
+export function redactKeys(text, keys) {
+  if (typeof text !== 'string' || !text) return text;
+  let out = text;
+  for (const k of keys) {
+    if (typeof k !== 'string' || k.length < REDACT_MIN_LEN) continue;
+    if (out.includes(k)) out = out.split(k).join(maskKey(k));
+  }
+  return out;
+}
+
+/** Deep copy of `value` with every occurrence of a key redacted from strings. */
+function redactDeep(value, keys) {
+  if (typeof value === 'string') return redactKeys(value, keys);
+  if (Array.isArray(value)) return value.map(v => redactDeep(v, keys));
+  if (value && typeof value === 'object') {
+    const out = {};
+    for (const k of Object.keys(value)) out[k] = redactDeep(value[k], keys);
+    return out;
+  }
+  return value;
+}
+
+/**
+ * Redact any string in `value` against the keys held in `state`.
+ * Exported for the CLI, which formats gate diagnostics from provider-supplied
+ * text (Brave's `error.detail` is not guaranteed to be free of the token it is
+ * complaining about).
+ */
+export function redactState(value, state) {
+  return redactDeep(value, allKeys(state));
+}
+
+/**
+ * Deep-copy the state with every key masked — and with every OTHER field
+ * scrubbed of the raw key too. `...pp` used to copy `burned`, `cooldowns` and
+ * `validated` through verbatim, and `validated[].reason` is provider-supplied
+ * text: Brave answering "token BSA-xxx rejected" put the key straight back
+ * into the "masked" output.
+ */
+export function maskState(state) {
+  const st = state || {};
+  const secrets = allKeys(st);
+  const out = { schema_version: st.schema_version, last_ok_provider: st.last_ok_provider };
+  for (const p of PROVIDERS) {
+    const pp = st[p] || {};
+    const keys = Array.isArray(pp.keys) ? pp.keys : [];
+    const scrubbed = redactDeep({ ...pp }, secrets);
+    delete scrubbed._inMemory;
+    out[p] = {
+      ...scrubbed,
+      keys: keys.map(maskKey),
+      key_count: keys.length,
+    };
+  }
+  return out;
+}
+
+/** `state` as a caller may see it: masked, unless they asked for the raw one. */
+function stateFor(state, flags) {
+  return flags && flags['unsafe-show-keys'] ? state : maskState(state);
+}
+
 export async function keysAdd(pos, flags) {
   const provider = requireProvider(flags);
 
@@ -82,7 +172,19 @@ export async function keysAdd(pos, flags) {
   const addedCount = results.filter(r => r.added).length;
   if (addedCount) await saveStateAtomic(state);
 
-  return { provider, addedCount, attempted: inputKeys.length, results, state };
+  // Nothing that leaves this function carries a raw key. `results[].key` is the
+  // mask, and `validation`/`reason` are scrubbed too: they quote the provider's
+  // own error text, which may echo the token back at us.
+  const secrets = [...new Set([...inputKeys, ...allKeys(state)])].sort((a, b) => b.length - a.length);
+  const safeResults = results.map(r => ({ ...redactDeep(r, secrets), key: maskKey(r.key) }));
+
+  return {
+    provider,
+    addedCount,
+    attempted: inputKeys.length,
+    results: flags['unsafe-show-keys'] ? results : safeResults,
+    state: stateFor(state, flags),
+  };
 }
 
 export async function keysRemove(pos, flags) {
@@ -91,16 +193,28 @@ export async function keysRemove(pos, flags) {
   if (target == null) throw new Error('Usage: surf-research-skill keys remove --provider <name> <index|key>');
   const state = await loadState();
   const keys = state[provider].keys;
-  let idx = -1;
-  if (/^\d+$/.test(String(target))) {
+
+  // BY VALUE FIRST, by index second. The old order tried /^\d+$/ first, so a
+  // key whose literal value is "2" deleted whatever sat at index 2 — a
+  // different, working key — and reported success. An exact value match is
+  // never ambiguous; an index is only consulted when nothing matches.
+  let idx = keys.indexOf(target);
+  let matchedBy = 'value';
+  if (idx < 0 && /^\d+$/.test(String(target))) {
     idx = Number(target);
-  } else {
-    idx = keys.indexOf(target);
+    matchedBy = 'index';
   }
   if (idx < 0 || idx >= keys.length) throw new Error(`no key at '${target}' for provider '${provider}'`);
-  keys.splice(idx, 1);
-  // adjust current and burned indices
-  if (state[provider].current >= keys.length) state[provider].current = 0;
+
+  const [removedKey] = keys.splice(idx, 1);
+  // `current` is an index into the same array, so it shifts with everything
+  // else. Clamping only when it ran off the end left it pointing at the NEXT
+  // key whenever a key below it was removed.
+  const p = state[provider];
+  if (!Number.isInteger(p.current) || p.current < 0) p.current = 0;
+  else if (idx < p.current) p.current -= 1;
+  if (p.current >= keys.length) p.current = 0;
+
   const reindex = (list) => (list || [])
     .filter(x => x.index !== idx)
     .map(x => (x.index > idx ? { ...x, index: x.index - 1 } : x));
@@ -110,36 +224,21 @@ export async function keysRemove(pos, flags) {
   // one key's verdict to another.
   state[provider].validated = reindex(state[provider].validated);
   await saveStateAtomic(state);
-  return { provider, removed: true, index: idx, state };
-}
-
-/**
- * Deep-copy the state with every key masked.
- *
- * `keys list --json` used to print raw keys. That is a real leak vector for
- * THIS package specifically: it exists to be driven by AI agents, whose stdout
- * lands in transcripts, handoff files and task plans that are then read back,
- * committed, or pasted. The human-readable form has always masked; the JSON
- * form silently did not.
- */
-function maskState(state) {
-  const out = { schema_version: state.schema_version, last_ok_provider: state.last_ok_provider };
-  for (const p of PROVIDERS) {
-    const pp = state[p] || {};
-    out[p] = {
-      ...pp,
-      keys: (pp.keys || []).map(maskKey),
-      key_count: (pp.keys || []).length,
-    };
-  }
-  return out;
+  return {
+    provider,
+    removed: true,
+    index: idx,
+    matched_by: matchedBy,
+    key: maskKey(removedKey),
+    state: stateFor(state, flags),
+  };
 }
 
 export async function keysList(_pos, flags) {
   const state = await loadState();
   // Opt in explicitly to get raw keys — and only when stdout is not a terminal
   // someone is screen-sharing. The flag name is deliberately unpleasant.
-  if (flags.json) return { json: true, state: flags['unsafe-show-keys'] ? state : maskState(state) };
+  if (flags.json) return { json: true, state: stateFor(state, flags) };
   const lines = [];
   lines.push(`**Surf keys** (config: \`${KEYS_FILE}\`)`);
   lines.push(`last_ok_provider: \`${state.last_ok_provider || 'none'}\`\n`);
@@ -192,7 +291,7 @@ export async function keysReset(_pos, flags) {
     state[p].cooldowns = [];
   }
   await saveStateAtomic(state);
-  return { provider, reset: true, state };
+  return { provider, reset: true, state: stateFor(state, flags) };
 }
 
 export async function keysClear(_pos, flags) {
@@ -216,7 +315,7 @@ export async function keysClear(_pos, flags) {
     if (state.last_ok_provider === provider) state.last_ok_provider = null;
   }
   await saveStateAtomic(state);
-  return { cleared: true, state };
+  return { cleared: true, state: stateFor(state, flags) };
 }
 
 export async function runKeysSubcommand(sub, pos, flags) {

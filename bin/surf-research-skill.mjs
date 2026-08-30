@@ -11,20 +11,22 @@ import { parseFlags, assertEnum, numericFlag, maskKey } from '../src/lib/flags.m
 import { dispatch, DispatchError } from '../src/lib/dispatch.mjs';
 import { mapPool } from '../src/lib/pool.mjs';
 import { formatFor } from '../src/lib/format.mjs';
-import { runKeysSubcommand } from '../src/lib/keys-cmd.mjs';
+import { runKeysSubcommand, maskState, redactState } from '../src/lib/keys-cmd.mjs';
 import { cacheClear } from '../src/lib/cache.mjs';
 import { readUsage, USAGE_LOG } from '../src/lib/audit.mjs';
-import { migrateLegacy, loadState, saveStateAtomic } from '../src/lib/state.mjs';
+import { migrateLegacy, loadState, saveStateAtomic, KEYS_FILE } from '../src/lib/state.mjs';
 import { runSetup } from '../src/lib/setup.mjs';
 import { runProjectConfig, formatProjectConfigResult } from '../src/lib/project-config.mjs';
 import { MODES as SEARCH_MODES } from '../src/lib/providers/brave.mjs';
-import { GateError, EXIT_CONFIG, assertProviderReady } from '../src/lib/preflight.mjs';
+import {
+  GateError, EXIT_CONFIG, assertProviderReady, resolveGate, formatGate, GATE,
+} from '../src/lib/preflight.mjs';
 import { DEFAULT_SUB_AGENTS, MAX_SUB_AGENTS } from '../src/lib/ai/orchestrator.mjs';
 import { progress, setSilent } from '../src/lib/progress.mjs';
 import { runAiCommand } from '../src/lib/ai/cli.mjs';
 import { runAiSetup } from '../src/lib/ai/setup.mjs';
 
-const VERSION = '8.0.0';
+const VERSION = '8.0.1';
 
 // Catch SIGTERM/SIGINT so a harness-driven kill surfaces a useful message
 // instead of dying silently. This is defense-in-depth: dispatch already
@@ -89,6 +91,13 @@ surf-ai (autonomous research — the CLI runs the whole loop):
     --ledger                append the coverage table + the rejected frontier
 
 Commands:
+  gate [--json]               Is there a usable Brave key? Exit 0 = yes,
+                              exit 78 = no. THIS is the FASE-0 probe: it is the
+                              only verb that both answers without a key and
+                              reports the answer in its exit code. ('keys list'
+                              also runs without a key, but it is a report and
+                              always exits 0.) --json prints a masked
+                              diagnostic; no key material ever reaches stdout.
   setup                       Interactive onboarding wizard (TTY required)
   project-config [--harness <copilot|claude|pi|all>] [--yes]
                               Write per-project bash-timeout config so the
@@ -104,10 +113,14 @@ Commands:
   cache-clear                 Purge response cache
   cost [--reset]              Local request ledger
   keys <add|remove|list|reset|clear> [...]
-                              'keys list --json' MASKS every key. Pass
+                              EVERY 'keys ... --json' payload is MASKED — add,
+                              remove, list and reset alike. Pass
                               --unsafe-show-keys only if a script genuinely
                               needs the raw value — agent stdout ends up in
                               transcripts and handoff files.
+                              'keys remove <index|key>' matches BY VALUE first
+                              and falls back to the index only when no key
+                              equals the argument.
 
 Search flags (all of these now actually reach Brave — several used to be
 accepted and silently discarded):
@@ -158,13 +171,64 @@ Examples:
   surf-research-skill keys add --provider brave BSA-AAA BSA-BBB   # many at once
   surf-research-skill keys list
 
+  surf-research-skill gate || echo "no usable Brave key (exit 78)"
+
 Keys & state:   ~/.config/surf/keys.json (chmod 600)
 Brave API docs: references/brave-api.md · https://api-dashboard.search.brave.com
 Skill docs:     ~/.agents/skills/surf-research-agent-skill/SKILL.md`;
 
+// The exit-code contract, printed by --help and relied on by orchestrating
+// agents to decide whether to FIX the command or to carry on without the data:
+//   1  the operation ran and failed   → retrying may work
+//   2  you typed the command wrong    → retrying the same thing cannot work
+//   78 configuration is broken        → no valid Brave key; fix the config
+//
+// die() is for (1). usage() is for (2). Almost everything below is (2): a
+// missing argument, an unreadable file, an unknown verb. They used to all
+// exit 1, which told an agent to retry a command that can never succeed.
 function die(msg, code = 1) {
   process.stderr.write(`❌ Error: ${msg}\n`);
   process.exit(code);
+}
+
+function usage(msg) {
+  die(msg, 2);
+}
+
+/**
+ * The single exit for every error this bin can produce. One function, so the
+ * flag-parsing path and the command path cannot disagree about what an error
+ * costs — and so nothing ever reaches Node's default handler, which prints a
+ * stack trace full of absolute paths and exits 1.
+ *
+ * Never returns.
+ */
+function reportFatal(e) {
+  const codes2 = new Set([
+    'FLAG_USAGE',            // src/lib/flags.mjs — a flag you typed wrong
+    'AI_CLI_USAGE',          // src/lib/ai/cli.mjs
+    'PROJECT_CONFIG_NO_TTY',
+    'PROJECT_CONFIG_BAD_HARNESS',
+    'NO_TTY',
+    'NEEDS_YES',
+  ]);
+  if (e instanceof GateError) {
+    process.stderr.write(e.message + '\n');
+    process.exit(EXIT_CONFIG);
+  }
+  if (e instanceof DispatchError) {
+    process.stderr.write(`❌ Error [${e.code}]: ${e.message}\n`);
+    if (e.code === 'NoProviderAvailable' && process.stdin.isTTY) {
+      process.stderr.write(`→ Run 'surf-research-skill setup' to configure keys interactively.\n`);
+    }
+    process.exit(1);
+  }
+  if (e && codes2.has(e.code)) {
+    process.stderr.write(`❌ Error: ${e.message}\n`);
+    process.exit(2);
+  }
+  process.stderr.write(`❌ Error: ${(e && e.message) || String(e)}\n`);
+  process.exit(1);
 }
 
 function out(msg) {
@@ -202,10 +266,10 @@ function buildSearchArgs(query, flags) {
   assertEnum('--time', flags.time, ['day', 'week', 'month', 'year']);
   assertEnum('--safesearch', flags.safesearch, ['off', 'moderate', 'strict']);
   if (flags.mode && flags.depth) {
-    die(`--mode and --depth mean the same thing; pass only one (--depth is the deprecated spelling).`, 2);
+    usage(`--mode and --depth mean the same thing; pass only one (--depth is the deprecated spelling).`);
   }
   if (flags.country && !/^[A-Za-z]{2}$/.test(String(flags.country))) {
-    die(`--country must be a 2-letter code (got '${flags.country}')`, 2);
+    usage(`--country must be a 2-letter code (got '${flags.country}')`);
   }
 
   // NOTE: no implicit default is injected. The old code substituted
@@ -234,7 +298,7 @@ function buildSearchArgs(query, flags) {
 }
 
 async function cmdSearch(pos, flags) {
-  if (!pos.length) die('Usage: surf-research-skill search "query" [more queries ...]');
+  if (!pos.length) usage('Usage: surf-research-skill search "query" [more queries ...]');
 
   // Backward-compat: 1 positional arg = exactly one query (same as before).
   if (pos.length === 1) {
@@ -347,21 +411,57 @@ function emitBatchResult(payload, flags) {
 
 // --- Parallel search (fan-out) ---
 
-// Read a JSON array (preferred) or newline-delimited list from a file.
-// Returns the parsed array; throws via die() on read/parse problems.
+// Read a JSON array (preferred) or a newline-delimited list from a file.
+// Every failure is a USAGE error (exit 2): the file is input the caller typed,
+// and no amount of retrying fixes a missing bracket.
+//
+// WHY THIS IS A MONEY BUG, not a cosmetic one: the old version fell back to
+// newline-splitting on ANY JSON parse error. A --queries-file with one missing
+// bracket therefore became the query list
+//     [ '[', '"alpha query",', '"beta query"' ]
+// and surf sent all three to Brave as real, billable searches. Malformed input
+// must cost zero requests, so a file that ANNOUNCES itself as JSON (first
+// non-space character `[` or `{`) has to BE valid JSON or the command stops
+// before dispatch is ever reached.
 async function readListFile(file, label) {
   let txt;
   try { txt = await readFile(file, 'utf8'); }
-  catch (e) { die(`${label}: cannot read ${file}: ${e.message}`); }
-  try {
-    const parsed = JSON.parse(txt);
-    if (!Array.isArray(parsed)) die(`${label}: ${file} must contain a JSON array.`);
+  catch (e) { usage(`${label}: cannot read ${file}: ${e.message}`); }
+
+  const trimmed = String(txt).trim();
+  if (!trimmed) usage(`${label}: ${file} is empty.`);
+
+  if (trimmed[0] === '[' || trimmed[0] === '{') {
+    let parsed;
+    try {
+      parsed = JSON.parse(trimmed);
+    } catch (e) {
+      usage(
+        `${label}: ${file} starts like JSON but does not parse (${e.message}). ` +
+        `Fix the file — surf will NOT guess, because every guessed line would be a real, billable Brave search.`,
+      );
+    }
+    if (!Array.isArray(parsed)) usage(`${label}: ${file} must contain a JSON array.`);
     return parsed;
-  } catch (e) {
-    if (e && e.message && /must contain a JSON array/.test(e.message)) throw e;
-    // Not JSON — treat as newline-delimited.
-    return txt.split('\n').map(s => s.trim()).filter(Boolean);
   }
+
+  // Not JSON — the documented newline-delimited form.
+  const lines = trimmed.split('\n').map(s => s.trim()).filter(Boolean);
+  // A file that got here still holding JSON fragments is broken JSON that lost
+  // its outer brackets, not a list. Same reasoning: refuse, do not spend.
+  //   `[` `]` `,`        — bare punctuation
+  //   `"alpha query",`   — a quoted element with its separator still attached
+  //   `{"q":"x"},`       — an object element likewise
+  // A plain `"exact phrase"` line is NOT rejected: quoting a phrase is a real
+  // way to write a query, and it has no trailing separator.
+  const fragment = lines.find(l => /^[[\]{},]+$/.test(l) || /^["{].*,$/.test(l));
+  if (fragment) {
+    usage(
+      `${label}: ${file} looks like broken JSON (a line is ${JSON.stringify(fragment)}), ` +
+      `not a newline-delimited list. Fix the file — surf will not turn syntax into billable searches.`,
+    );
+  }
+  return lines;
 }
 
 // Build the query work-list from positional args + an optional --queries-file.
@@ -370,6 +470,7 @@ async function collectParallelQueries(pos, flags) {
   const items = pos.map((q, i) => ({ id: `q${i + 1}`, q, sub: null }));
   if (flags['queries-file']) {
     const parsed = await readListFile(flags['queries-file'], '--queries-file');
+    const before = items.length;
     parsed.forEach((el, i) => {
       if (typeof el === 'string') {
         items.push({ id: `f${i + 1}`, q: el, sub: null });
@@ -381,6 +482,14 @@ async function collectParallelQueries(pos, flags) {
         });
       }
     });
+    // A non-empty file that yielded nothing usable is a malformed file, not an
+    // empty one. Say so instead of falling through to the generic "Usage:".
+    if (parsed.length && items.length === before) {
+      usage(
+        `--queries-file: ${flags['queries-file']} has ${parsed.length} entr${parsed.length === 1 ? 'y' : 'ies'} ` +
+        `but none is a query. Expected [ "text", {"q":"text","id":"…","sub":"…"} ].`,
+      );
+    }
   }
   return items.filter(it => typeof it.q === 'string' && it.q.trim());
 }
@@ -407,6 +516,14 @@ function resolveSubAgents(flags) {
 async function cmdSearchParallel(pos, flags) {
   const items = await collectParallelQueries(pos, flags);
   if (!items.length) {
+    // KNOWN INCONSISTENCY (BUG#22): by the contract above this is a usage
+    // error and should exit 2, exactly like `search` with no query. It stays 1
+    // because test/adversarial/flags-cli.mjs pins it: its --queries-file
+    // control asserts that `search-parallel --sub-agents 99` (an EMPTY query
+    // list) exits 1, and uses that to tell "the file produced no queries"
+    // apart from "a flag was rejected". Changing this to 2 turns that
+    // assertion red; the suite is not ours to edit. Fix the assertion and the
+    // second argument here together.
     die('Usage: surf-research-skill search-parallel "q1" "q2" ... [--queries-file F.json] [--sub-agents N] [--no-budget]');
   }
   const concurrency = resolveSubAgents(flags);
@@ -577,9 +694,54 @@ async function cmdCost(_pos, flags) {
   out(md);
 }
 
+// --- gate (the FASE-0 probe) ---
+//
+// SKILL.md used to say "run `keys list` and check for exit 78". It never
+// worked: `keys list` is in NO_KEYS_NEEDED (it has to be — a missing key is
+// diagnosed by listing the keys) and it always exits 0, so the phase-0 branch
+// was dead code. `keys list` cannot be the probe without breaking the one job
+// it has, hence a verb whose ONLY output is the verdict:
+//
+//   exit 0  → a usable Brave key exists, searches can run
+//   exit 78 → they cannot, and retrying will not help (sysexits EX_CONFIG)
+async function cmdGate(_pos, flags) {
+  const state = await loadState();
+  const res = await resolveGate(state, 'brave');
+  const ready = res.verdict === GATE.READY;
+  const gate = ready ? null : formatGate(res.verdict, res.detail, 'brave');
+
+  if (flags.json) {
+    // Masked, like every other --json payload here. `detail` and `message`
+    // quote provider-supplied text, which is not guaranteed to be free of the
+    // token it is complaining about, so they are scrubbed too.
+    const brave = maskState(state).brave || {};
+    const payload = redactState({
+      ok: ready,
+      provider: 'brave',
+      verdict: res.verdict,
+      code: ready ? 'BraveKeyReady' : gate.code,
+      detail: res.detail || null,
+      key_index: Number.isInteger(res.index) && res.index >= 0 ? res.index : null,
+      key_count: brave.key_count || 0,
+      keys: brave.keys || [],
+      keys_file: KEYS_FILE,
+      exit_code: ready ? 0 : EXIT_CONFIG,
+      message: ready ? null : gate.text,
+    }, state);
+    out(JSON.stringify(payload, null, 2));
+  } else if (ready) {
+    out(`✓ Brave gate OK — key #${res.index} is usable (${res.detail}).`);
+  } else {
+    process.stderr.write(gate.text + '\n');
+  }
+
+  // exitCode, not exit(): stdout must flush before the process ends.
+  process.exitCode = ready ? 0 : EXIT_CONFIG;
+}
+
 async function cmdKeys(pos, flags) {
   const sub = pos[0];
-  if (!sub) die('Usage: surf-research-skill keys <add|remove|list|reset|clear> ...');
+  if (!sub) usage('Usage: surf-research-skill keys <add|remove|list|reset|clear> ...');
   const subPos = pos.slice(1);
   try {
     const result = await runKeysSubcommand(sub, subPos, flags);
@@ -589,6 +751,10 @@ async function cmdKeys(pos, flags) {
       return;
     }
     if (flags.json) {
+      // Safe to print raw: keys-cmd.mjs masks EVERY value it returns (results
+      // and state alike) unless --unsafe-show-keys was passed. This line used
+      // to be the leak — add/remove/reset printed the unmasked result while
+      // only `list` had been wired to the mask.
       out(JSON.stringify(result, null, 2));
     } else if (sub === 'add') {
       for (const r of result.results) {
@@ -609,7 +775,7 @@ async function cmdKeys(pos, flags) {
         process.exitCode = 1;
       }
     } else if (sub === 'remove' || sub === 'rm' || sub === 'delete') {
-      out(`✓ removed index ${result.index} from ${result.provider}`);
+      out(`✓ removed index ${result.index} (${result.key}, matched by ${result.matched_by}) from ${result.provider}`);
     } else if (sub === 'reset') {
       out(`✓ cleared burned for ${result.provider || 'all providers'}`);
     } else if (sub === 'clear') {
@@ -637,7 +803,17 @@ if (cmd === '--version' || cmd === '-v') {
   out(VERSION); process.exit(0);
 }
 
-const { pos, flags } = parseFlags(rest);
+// parseFlags runs at module top level, OUTSIDE the try/catch further down, so
+// every FlagError it raised used to escape as an unhandled rejection: Node
+// printed a raw stack trace with absolute file paths and exited 1. An agent
+// reading stderr to decide what to do next got a stack trace where the
+// documented contract promised "exit 2, you typed it wrong". Catch it here.
+let pos, flags;
+try {
+  ({ pos, flags } = parseFlags(rest));
+} catch (e) {
+  reportFatal(e);
+}
 
 // Wire --quiet before any progress event fires.
 if (flags.quiet) setSilent(true);
@@ -655,11 +831,32 @@ const REMOVED_VERBS = new Set([
 // own, and (b) was satisfied by a Tavily key. Now: no valid Brave key, no run.
 // In a terminal we still offer the wizard, because a human who can fix it
 // right now should be allowed to.
+//
+// `gate` is exempt for the same reason `keys` is: it exists to answer the
+// question WHEN THERE IS NO KEY. Running the gate before it would make it
+// print the gate's own message and exit 78 without ever consulting --json, and
+// on a TTY it would ambush the caller with the setup wizard.
 const NO_KEYS_NEEDED = new Set([
-  'setup', 'keys', 'project-config',
+  'setup', 'keys', 'project-config', 'gate',
   'cache-clear', 'cost', 'ai-setup',
   '--help', '-h', '--version', '-v',
 ]);
+// Every verb the switch below understands, kept beside NO_KEYS_NEEDED so the
+// two are edited together. A typo is caught HERE, before the gate: otherwise
+// `surf-research-skill serach "q"` on a machine with no key yet answers
+// "configuration is broken, no valid Brave key" (78) when the truth is "you
+// typed it wrong" (2), and the agent goes off fixing the wrong thing. A verb
+// added to the switch but forgotten here fails loudly and immediately, which
+// is the safe direction — it can never turn into a keyless search.
+const KNOWN_VERBS = new Set([
+  'ai', 'surf-search-normal', 'surf-search-unlimit', 'surf-search-unlimited',
+  'ai-setup', 'search', 'search-parallel', 'cache-clear', 'cost', 'keys',
+  'gate', 'setup', 'project-config',
+]);
+if (!KNOWN_VERBS.has(cmd) && !REMOVED_VERBS.has(cmd)) {
+  usage(`Unknown command: ${cmd}. Try 'surf-research-skill --help'.`);
+}
+
 if (!NO_KEYS_NEEDED.has(cmd) && !REMOVED_VERBS.has(cmd)) {
   const state = await loadState();
   try {
@@ -700,6 +897,7 @@ try {
     case 'cache-clear': await cmdCacheClear(); break;
     case 'cost': await cmdCost(pos, flags); break;
     case 'keys': await cmdKeys(pos, flags); break;
+    case 'gate': await cmdGate(pos, flags); break;
     case 'setup': await runSetup(); break;
     case 'project-config': {
       const result = await runProjectConfig(pos, flags);
@@ -708,43 +906,16 @@ try {
     }
     default:
       if (REMOVED_VERBS.has(cmd)) {
-        die(
+        usage(
           `'${cmd}' was removed in v8.0.0. Brave Search is a SERP: /web/search returns ranked ` +
           `links and snippets, never page content, and has no crawl, site-map or async-research ` +
           `endpoint. Use 'search' and follow the returned URLs with your own reader.`,
-          2,
         );
       }
-      die(`Unknown command: ${cmd}. Try 'surf-research-skill --help'.`);
+      // Unreachable: KNOWN_VERBS rejects a typo before the gate. Kept as the
+      // safety net for a verb added to KNOWN_VERBS but not to this switch.
+      usage(`Unknown command: ${cmd}. Try 'surf-research-skill --help'.`);
   }
 } catch (e) {
-  if (e instanceof GateError) {
-    process.stderr.write(e.message + '\n');
-    process.exit(EXIT_CONFIG);
-  }
-  if (e && e.code === 'FLAG_USAGE') {
-    process.stderr.write(`❌ Error: ${e.message}\n`);
-    process.exit(2);
-  }
-  if (e instanceof DispatchError) {
-    process.stderr.write(`❌ Error [${e.code}]: ${e.message}\n`);
-    if (e.code === 'NoProviderAvailable' && process.stdin.isTTY) {
-      process.stderr.write(`→ Run 'surf-research-skill setup' to configure keys interactively.\n`);
-    }
-    process.exit(1);
-  }
-  if (e.code === 'AI_CLI_USAGE') {
-    process.stderr.write(`❌ Error: ${e.message}\n`);
-    process.exit(2);
-  }
-  if (e.code === 'PROJECT_CONFIG_NO_TTY' || e.code === 'PROJECT_CONFIG_BAD_HARNESS') {
-    process.stderr.write(`❌ Error: ${e.message}\n`);
-    process.exit(2);
-  }
-  if (e.code === 'NO_TTY') {
-    process.stderr.write(`❌ Error: ${e.message}\n`);
-    process.exit(2);
-  }
-  process.stderr.write(`❌ Error: ${e.message || String(e)}\n`);
-  process.exit(1);
+  reportFatal(e);
 }
