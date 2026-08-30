@@ -10,12 +10,13 @@
 
 import {
   loadState, saveStateAtomic, markBurned, providerHasUsableKey,
-  setCooldown, cooldownActive, explainUnusable,
+  setCooldown, cooldownActive, explainUnusable, getValidation,
 } from './state.mjs';
 import { audit, recordUsage } from './audit.mjs';
 import { cacheKey, cacheGet, cacheSet } from './cache.mjs';
 import { getProvider, capabilityMap, SEARCH_PROVIDER } from './providers/index.mjs';
 import { assertSearchReady } from './preflight.mjs';
+import { monthlyRemaining } from './ratelimit.mjs';
 import { guardExpensive } from './cost.mjs';
 import { sleep } from './flags.mjs';
 import { progress } from './progress.mjs';
@@ -28,6 +29,14 @@ const CACHEABLE = new Set(['search']);
 // After a key exhausts its 429 retries, sideline it for this long (persisted)
 // so we stop hammering a rate-limited key now and on the next process run.
 const RATE_LIMIT_COOLDOWN_MS = Number(process.env.SURF_RATE_LIMIT_COOLDOWN_MS) || 60_000;
+
+// Ceiling for the RETRY-AFTER sleep channel, on the CONSUMER side of the rule
+// ratelimit.mjs publishes (RATE_BACKOFF_MS / QUOTA_BACKOFF_MS): the per-second
+// window's reset never legitimately exceeds 5s, so a number bigger than this
+// arriving in `e.retryAfterMs` is a MONTHLY fact and must never be slept — a
+// month-long sleep is a hang, and the harness-budget guard runs once per key,
+// before the attempts.
+const PER_WINDOW_SLEEP_CEILING_MS = 5_000;
 
 // Detect the agent harness's bash timeout from env vars. The number is the
 // total time (ms) the harness will allow our process to live before SIGTERM.
@@ -191,7 +200,10 @@ export async function dispatch(operation, args, flags = {}, runCtx = {}) {
 
   // THE HARD STOP. Nothing below this line runs without a Brave key we have
   // either just validated or validated recently. The common path is offline.
-  await assertSearchReady(state, operation, { persist: persistState });
+  // The verdict names the index the gate trusts; dispatch keeps it so the
+  // ring can start there when it would otherwise spend the first request on
+  // a key the gate never judged (D1).
+  const gate = await assertSearchReady(state, operation, { persist: persistState });
 
   guardExpensive(operation, args, chain, flags);
 
@@ -219,15 +231,35 @@ export async function dispatch(operation, args, flags = {}, runCtx = {}) {
         const burnedIdx = new Set(p.burned.map(b => b.index));
         const now = Date.now();
         const n = p.keys.length;
-        const start = Math.max(0, Math.min(p.current || 0, n - 1));
-        for (let off = 0; off < n; off++) {
-          const i = (start + off) % n;
-          if (attempted.has(i)) continue;
-          if (burnedIdx.has(i)) continue;
-          if (cooldownActive(p, i, now)) continue; // skip rate-limited keys
-          return i;
+        const ringStart = Math.max(0, Math.min(p.current || 0, n - 1));
+        const pick = (start) => {
+          for (let off = 0; off < n; off++) {
+            const i = (start + off) % n;
+            if (attempted.has(i)) continue;
+            if (burnedIdx.has(i)) continue;
+            if (cooldownActive(p, i, now)) continue; // skip rate-limited keys
+            return i;
+          }
+          return -1;
+        };
+        const candidate = pick(ringStart);
+        // D1: the gate's READY verdict names the index it trusts, and that
+        // trust is the whole point of the gate — "READY" must mean the next
+        // request goes out on the proven key, not on whatever the ring
+        // happens to start at. The override is deliberately NARROW: it only
+        // applies when the ring's would-be first pick has NO verdict at all
+        // (a key the gate never judged — spending a request on it is exactly
+        // the D1 waste). A candidate that already carries a verdict keeps the
+        // ring's own rotation: pinning every request to the gate's index
+        // would collapse the multi-key ring onto one key.
+        const gateIdx = gate && gate.index >= 0 && gate.index < n ? gate.index : -1;
+        if (candidate !== -1 && gateIdx !== -1
+            && !attempted.has(gateIdx) && !burnedIdx.has(gateIdx)
+            && !cooldownActive(p, gateIdx, now)
+            && !getValidation(state, providerName, candidate)) {
+          return gateIdx;
         }
-        return -1;
+        return candidate;
       })();
       if (keyIdx === -1) { providerExhausted = true; break; }
       attempted.add(keyIdx);
@@ -295,15 +327,42 @@ export async function dispatch(operation, args, flags = {}, runCtx = {}) {
 
           if (kind === 'rate_limit_429') {
             consecutive429++;
-            if (attempt < 2) {
+            // THE MONTHLY QUOTA IS NOT A BACKOFF (consumer half of the rule
+            // ratelimit.mjs publishes). A 429 reporting the plan QUOTA
+            // (SUBSCRIPTION_QUOTA_EXCEEDED / QUOTA_EXCEEDED), billing (402), a
+            // monthly reset fact on the sleep channel, or a ledger counter of
+            // 0 will not come back for anything this process can wait for —
+            // "wait and retry" is guaranteed to fail, and every sleeping
+            // second is time stolen from the keys that still have quota. Skip
+            // the key the way a cooldown would, immediately, instead of
+            // sleeping the raw number.
+            const quota = e.statusCode === 402
+              || /QUOTA/.test(String(e.code || ''))
+              || (Number.isFinite(e.retryAfterMs) && e.retryAfterMs > PER_WINDOW_SLEEP_CEILING_MS);
+            let monthlyLeft = null;
+            if (!quota) {
+              // The ledger held the answer for cases the code cannot name: a
+              // plain RATE_LIMITED 429 whose x-ratelimit-remaining says "0, 0"
+              // (month gone). The adapter learns from this same response
+              // before throwing it to us, so the counter is current. A ledger
+              // failure must never crash the retry logic, so it degrades to
+              // "nothing known" and the code/status signals decide.
+              try { monthlyLeft = await monthlyRemaining(ctx.key); } catch { monthlyLeft = null; }
+            }
+            const monthGone = quota || (Number.isFinite(monthlyLeft) && monthlyLeft <= 0);
+            if (!monthGone && attempt < 2) {
               // Brave sends no Retry-After; the adapter derives the wait from
               // x-ratelimit-reset and hands it over as retryAfterMs.
               const wait = e.retryAfterMs || backoff(attempt);
               progress.retry(`${providerName} 429 — backoff ${wait}ms (attempt ${attempt + 1}/3)`);
               await sleep(wait); continue;
             }
-            // Exhausted 429 retries: sideline this key on a short, persisted
-            // cooldown so we skip it now and next run instead of hammering it.
+            // Exhausted retries, or a quota the month will not refill:
+            // sideline this key on a short, persisted cooldown so we skip it
+            // now and next run instead of hammering it.
+            if (monthGone) {
+              progress.warn(`${providerName} key #${keyIdx} monthly quota exhausted — skipped, not retried`);
+            }
             setCooldown(state, providerName, keyIdx, Date.now() + RATE_LIMIT_COOLDOWN_MS);
             if (persistState) await saveStateAtomic(state);
             break; // -> next key

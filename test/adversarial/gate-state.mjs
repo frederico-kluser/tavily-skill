@@ -378,8 +378,21 @@ section('gate: the key the gate proves is not the key dispatch uses');
   bug('D1', 'the gate blesses key #1 and dispatch still spends the next request on unproven key #0',
     g.index === 1 && used[0] === 'NEVER-CHECKED',
     `src/lib/preflight.mjs:91 returns index ${g.index}; src/lib/dispatch.mjs:186-201 restarts from p.current and ignores it`);
-  ok('the ring does self-heal afterwards — the bad key is burned and #1 answers',
-    st.brave.burned.map(b => b.index).join() === '0' && used[1] === 'PROVEN-GOOD');
+  // NOT a contract. This used to be an ok(), and its own description — the
+  // ring "self-heals" by BURNING the unproven key it was sent to — asserted
+  // the D1 defect as if it were correct behaviour: the self-heal only
+  // happened BECAUSE dispatch ignored the gate's index and spent the first
+  // request on the unjudged key, which is the whole disease. With the fix the
+  // ring starts at the gate-blessed index when its would-be first pick has no
+  // verdict, so the first request already goes out on the proven key: there
+  // is no bad key to burn and no second request to "heal" with. No
+  // implementation can both fix D1 and still burn key #0 in this scenario.
+  // The condition is UNCHANGED: `burned=[0] && used[1]` reads as FIXED
+  // instead of failing the suite (the same conversion the audit applied to
+  // BUG-21b and P1b).
+  bug('D1b', 'the SAME defect as D1 asserted as correct behaviour: the ring only "self-heals" because it first spent a request on the unproven key and burned it',
+    st.brave.burned.map(b => b.index).join() === '0' && used[1] === 'PROVEN-GOOD',
+    `src/lib/dispatch.mjs:206-262 now starts the ring at the gate's index when the first pick is unjudged → burned=${st.brave.burned.map(b => b.index).join() || '(none)'}, used=${JSON.stringify(used)}`);
 }
 
 section('gate: formatGate speaks all four verdicts');
