@@ -1,729 +1,2852 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="pt-BR">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="plannotator-theme" content="host">
-<title>Onda 7 do surf-agent-skill — 15 frentes paralelas liquidam 85 defeitos sem abrir uma conexão</title>
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%235537eb'/%3E%3Ctext x='16' y='21.5' font-family='ui-monospace,monospace' font-size='14' font-weight='700' fill='%23ffffff' text-anchor='middle'%3ES7%3C/text%3E%3C/svg%3E">
-<style>
-/* ============ Plannotator theme tokens (tema do host; opt-in declarado no <head>) ============ */
-:root {
-  --background: oklch(0.97 0.005 260);
-  --foreground: oklch(0.18 0.02 260);
-  --card: oklch(1 0 0);
-  --card-foreground: oklch(0.18 0.02 260);
-  --muted: oklch(0.92 0.01 260);
-  --muted-foreground: oklch(0.40 0.02 260);
-  --primary: oklch(0.50 0.25 280);
-  --primary-foreground: oklch(1 0 0);
-  --secondary: oklch(0.50 0.18 180);
-  --accent: oklch(0.60 0.22 50);
-  --accent-foreground: oklch(0.18 0.02 260);
-  --destructive: oklch(0.50 0.25 25);
-  --success: oklch(0.45 0.20 150);
-  --warning: oklch(0.55 0.18 85);
-  --border: oklch(0.88 0.01 260);
-  --code-bg: oklch(0.92 0.01 260);
-  --ring: oklch(0.50 0.25 280);
-  --radius: 0.625rem;
-  --font-sans: 'Inter', system-ui, -apple-system, sans-serif;
-  --font-mono: 'JetBrains Mono', 'Fira Code', ui-monospace, monospace;
-  --font-display: ui-serif, Georgia, 'Times New Roman', serif;
-  /* derivados locais */
-  --edge: color-mix(in oklab, var(--foreground) 38%, transparent);
-  --edge-strong: color-mix(in oklab, var(--foreground) 68%, transparent);
-  --ok-bg: color-mix(in oklab, var(--success) 11%, var(--card));
-  --warn-bg: color-mix(in oklab, var(--warning) 13%, var(--card));
-  --bad-bg: color-mix(in oklab, var(--destructive) 9%, var(--card));
-  --pri-bg: color-mix(in oklab, var(--primary) 8%, var(--card));
-  --code-fg: var(--foreground);
-}
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: oklch(0.15 0.02 260);
-    --foreground: oklch(0.90 0.01 260);
-    --card: oklch(0.22 0.02 260);
-    --card-foreground: oklch(0.90 0.01 260);
-    --muted: oklch(0.26 0.02 260);
-    --muted-foreground: oklch(0.72 0.02 260);
-    --primary: oklch(0.75 0.18 280);
-    --primary-foreground: oklch(0.15 0.02 260);
-    --accent: oklch(0.70 0.20 60);
-    --border: oklch(0.35 0.02 260);
-    --code-bg: oklch(0.26 0.02 260);
-    --destructive: oklch(0.65 0.20 25);
-    --success: oklch(0.72 0.17 150);
-    --warning: oklch(0.75 0.15 85);
-    --edge: color-mix(in oklab, var(--foreground) 34%, transparent);
-    --edge-strong: color-mix(in oklab, var(--foreground) 62%, transparent);
-    --ok-bg: color-mix(in oklab, var(--success) 13%, var(--card));
-    --warn-bg: color-mix(in oklab, var(--warning) 14%, var(--card));
-    --bad-bg: color-mix(in oklab, var(--destructive) 12%, var(--card));
-    --pri-bg: color-mix(in oklab, var(--primary) 13%, var(--card));
-  }
-}
-* { box-sizing: border-box; }
-html { scroll-behavior: smooth; }
-body {
-  margin: 0;
-  background: var(--background);
-  color: var(--foreground);
-  font-family: var(--font-sans);
-  font-size: 16px;
-  line-height: 1.62;
-  font-feature-settings: "tnum" 0;
-}
-.wrap { max-width: 1080px; margin: 0 auto; padding: 0 28px 80px; }
-p { max-width: 66ch; }
-h1, h2, h3 { font-family: var(--font-display); line-height: 1.16; text-wrap: balance; }
-h1 { font-size: clamp(1.9rem, 4.2vw, 2.9rem); margin: 18px 0 10px; letter-spacing: -0.01em; }
-h2 { font-size: 1.55rem; margin: 0 0 14px; }
-h2 .num { color: var(--primary); font-family: var(--font-mono); font-size: 0.95rem; vertical-align: 0.28em; margin-right: 10px; letter-spacing: 0.08em; }
-h3 { font-size: 1.12rem; margin: 26px 0 8px; }
-code, .mono { font-family: var(--font-mono); font-size: 0.86em; }
-.eyebrow {
-  font-family: var(--font-mono);
-  font-size: 0.74rem;
-  letter-spacing: 0.22em;
-  text-transform: uppercase;
-  color: var(--primary);
-  margin-top: 56px;
-  display: flex; flex-wrap: wrap; gap: 8px 18px; align-items: baseline;
-}
-.eyebrow .date { color: var(--muted-foreground); letter-spacing: 0.12em; }
-/* ============ cartões e superfícies ============ */
-.card {
-  background: var(--card);
-  border: 1.5px solid var(--border);
-  border-radius: var(--radius);
-}
-.prompt-box {
-  margin: 26px 0 8px;
-  padding: 16px 20px;
-  background: var(--muted);
-  border: 1.5px solid var(--border);
-  border-radius: var(--radius);
-  font-size: 0.94rem;
-}
-.prompt-box .tag {
-  display: block; font-family: var(--font-mono); font-size: 0.7rem;
-  letter-spacing: 0.18em; text-transform: uppercase; color: var(--muted-foreground); margin-bottom: 6px;
-}
-.answer-hero {
-  margin: 34px 0 30px;
-  padding: 26px 30px;
-  background: var(--pri-bg);
-  border: 1.5px solid var(--primary);
-  border-radius: var(--radius);
-  box-shadow: 0 4px 24px color-mix(in oklab, var(--primary) 10%, transparent);
-}
-.answer-hero .lead {
-  display: block; font-family: var(--font-mono); font-size: 0.72rem;
-  letter-spacing: 0.2em; text-transform: uppercase; color: var(--primary); margin-bottom: 10px;
-}
-.answer-hero p { font-size: 1.14rem; line-height: 1.5; margin: 0; }
-/* ============ KPI ============ */
-.kpi-grid {
-  display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; margin: 26px 0 10px;
-}
-.kpi {
-  background: var(--card); border: 1.5px solid var(--border); border-radius: var(--radius);
-  padding: 14px 16px 12px;
-}
-.kpi .v { font-family: var(--font-mono); font-size: 1.65rem; font-weight: 700; line-height: 1.1; font-variant-numeric: tabular-nums; color: var(--primary); }
-.kpi .k { font-size: 0.8rem; color: var(--muted-foreground); margin-top: 4px; line-height: 1.35; }
-.kpi.derived .v { color: var(--accent); }
-.kpi .der { display: inline-block; font-family: var(--font-mono); font-size: 0.64rem; color: var(--muted-foreground); border: 1px solid var(--border); border-radius: 999px; padding: 0 7px; margin-left: 6px; vertical-align: 0.35em; }
-/* ============ segmentos ============ */
-.seg { margin-top: 64px; }
-.seg p, .seg li { max-width: 68ch; }
-.lede { color: var(--muted-foreground); font-size: 1.02rem; margin-top: -4px; }
-crit, .crit { background: color-mix(in oklab, var(--warning) 26%, transparent); padding: 0 4px; border-radius: 4px; font-weight: 600; }
-/* ============ figuras ============ */
-.fig-shell { margin: 30px 0 18px; }
-.fig-shell .frame { overflow: hidden; background: var(--card); border: 1.5px solid var(--border); border-radius: var(--radius); padding: 18px 14px 6px; }
-.fig-shell svg { display: block; width: 100%; height: auto; }
-.fig-shell figcaption { margin-top: 10px; padding: 0 4px; }
-.fig-shell figcaption .claim { display: block; font-weight: 650; font-size: 0.98rem; max-width: 72ch; }
-.fig-shell figcaption .support { display: block; color: var(--muted-foreground); font-size: 0.87rem; margin-top: 3px; max-width: 80ch; }
-.fig-shell .frame .fhead { font-family: var(--font-mono); font-size: 0.7rem; letter-spacing: 0.18em; text-transform: uppercase; color: var(--muted-foreground); margin: 0 0 10px 2px; }
-.fig-shell .frame .fhead .fno { color: var(--primary); }
-/* nós e arestas SVG compartilhados */
-svg text { font-family: var(--font-sans); }
-svg text.m { font-family: var(--font-mono); font-size: 11px; }
-svg text.ms { font-family: var(--font-mono); font-size: 9px; }
-svg .n { fill: var(--card); stroke: var(--border); stroke-width: 1.5; }
-svg .n.t { fill: var(--pri-bg); stroke: var(--primary); stroke-width: 1.5; }
-svg .n.ok { fill: var(--ok-bg); stroke: var(--success); stroke-width: 1.5; }
-svg .n.warn { fill: var(--warn-bg); stroke: var(--warning); stroke-width: 1.5; }
-svg .n.bad { fill: var(--bad-bg); stroke: var(--destructive); stroke-width: 1.5; }
-svg .n.strong { stroke-width: 2.6; }
-svg .n.dashed { stroke-dasharray: 5 4; }
-svg .tt { fill: var(--foreground); font-size: 13px; font-weight: 600; }
-svg .ts { fill: var(--muted-foreground); font-size: 10.5px; }
-svg .edge { stroke: var(--edge-strong); stroke-width: 1.6; fill: none; }
-svg .edge.dashed { stroke-dasharray: 6 5; }
-svg .edge.deem { stroke: var(--edge); }
-svg .el { fill: var(--muted-foreground); font-size: 10px; font-family: var(--font-mono); }
-svg .el.imp { fill: var(--foreground); font-weight: 600; }
-/* ============ tabelas ============ */
-.tbl-wrap { overflow-x: auto; margin: 18px 0; }
-table { border-collapse: collapse; width: 100%; font-size: 0.9rem; background: var(--card); border: 1.5px solid var(--border); border-radius: var(--radius); }
-th, td { text-align: left; padding: 9px 14px; border-bottom: 1px solid var(--border); vertical-align: top; }
-th { font-family: var(--font-mono); font-size: 0.72rem; letter-spacing: 0.1em; text-transform: uppercase; color: var(--muted-foreground); background: var(--muted); }
-tr:last-child td { border-bottom: none; }
-td code { font-size: 0.84em; }
-.pill { display: inline-block; font-family: var(--font-mono); font-size: 0.68rem; letter-spacing: 0.06em; padding: 1px 8px; border-radius: 999px; border: 1px solid var(--border); }
-.pill.ok { color: var(--success); border-color: var(--success); }
-.pill.warn { color: var(--warning); border-color: var(--warning); }
-.pill.bad { color: var(--destructive); border-color: var(--destructive); }
-.pill.pri { color: var(--primary); border-color: var(--primary); }
-/* ============ timeline ============ */
-.tl { list-style: none; margin: 22px 0 0; padding: 0; }
-.tl li { position: relative; padding: 0 0 20px 34px; border-left: 2px solid var(--border); margin-left: 6px; }
-.tl li:last-child { border-left-color: transparent; padding-bottom: 4px; }
-.tl li::before { content: ""; position: absolute; left: -7px; top: 4px; width: 12px; height: 12px; border-radius: 50%; background: var(--card); border: 2.5px solid var(--primary); }
-.tl .t { font-family: var(--font-mono); font-size: 0.8rem; color: var(--primary); font-weight: 600; }
-.tl .d { font-size: 0.92rem; }
-/* ============ dobras (details) ============ */
-details.fold { margin: 22px 0; background: var(--card); border: 1.5px solid var(--border); border-radius: var(--radius); }
-details.fold > summary { cursor: pointer; padding: 14px 20px; font-weight: 600; font-size: 0.96rem; list-style: none; display: flex; align-items: center; gap: 10px; }
-details.fold > summary::before { content: "▸"; color: var(--primary); font-size: 0.85rem; transition: transform 0.15s ease; }
-details.fold[open] > summary::before { transform: rotate(90deg); }
-details.fold > summary::-webkit-details-marker { display: none; }
-details.fold > .fold-body { padding: 4px 22px 20px; border-top: 1px solid var(--border); }
-details.fold > .fold-body > p:first-child { margin-top: 14px; }
-details.fold > summary:focus-visible, a:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; border-radius: 4px; }
-/* ============ misc ============ */
-dfn.bw { font-style: normal; border-bottom: 1.5px dotted var(--primary); cursor: help; }
-.note { font-size: 0.86rem; color: var(--muted-foreground); }
-.derived-note { font-size: 0.78rem; color: var(--muted-foreground); font-family: var(--font-mono); }
-.grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
-.grid-2 > .card { padding: 16px 20px; }
-.callout { padding: 14px 18px; border-radius: var(--radius); border: 1.5px solid var(--border); margin: 16px 0; font-size: 0.94rem; }
-.callout.warn { background: var(--warn-bg); border-color: var(--warning); }
-.callout.ok { background: var(--ok-bg); border-color: var(--success); }
-.callout.critcall { background: var(--bad-bg); border-color: var(--destructive); }
-ul.clean { padding-left: 20px; }
-ul.clean li { margin: 6px 0; max-width: 70ch; }
-.commit-list { font-family: var(--font-mono); font-size: 0.82rem; line-height: 1.75; background: var(--code-bg); border: 1.5px solid var(--border); border-radius: var(--radius); padding: 14px 18px; overflow-x: auto; white-space: nowrap; }
-.commit-list .h { color: var(--primary); font-weight: 600; }
-footer { margin-top: 90px; padding-top: 22px; border-top: 1.5px solid var(--border); font-size: 0.8rem; color: var(--muted-foreground); }
-footer p { max-width: none; }
-@media (max-width: 760px) {
-  .kpi-grid { grid-template-columns: repeat(2, 1fr); }
-  .grid-2 { grid-template-columns: 1fr; }
-  .wrap { padding: 0 16px 60px; }
-}
-</style>
-</head>
-<body>
-<div class="wrap">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="plannotator-theme" content="host" />
+    <title>
+      Onda 7 do surf-agent-skill — 15 frentes paralelas liquidam 85 defeitos sem
+      abrir uma conexão
+    </title>
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%235537eb'/%3E%3Ctext x='16' y='21.5' font-family='ui-monospace,monospace' font-size='14' font-weight='700' fill='%23ffffff' text-anchor='middle'%3ES7%3C/text%3E%3C/svg%3E"
+    />
+    <style>
+      /* ============ Plannotator theme tokens (tema do host; opt-in declarado no <head>) ============ */
+      :root {
+        --background: oklch(0.97 0.005 260);
+        --foreground: oklch(0.18 0.02 260);
+        --card: oklch(1 0 0);
+        --card-foreground: oklch(0.18 0.02 260);
+        --muted: oklch(0.92 0.01 260);
+        --muted-foreground: oklch(0.4 0.02 260);
+        --primary: oklch(0.5 0.25 280);
+        --primary-foreground: oklch(1 0 0);
+        --secondary: oklch(0.5 0.18 180);
+        --accent: oklch(0.6 0.22 50);
+        --accent-foreground: oklch(0.18 0.02 260);
+        --destructive: oklch(0.5 0.25 25);
+        --success: oklch(0.45 0.2 150);
+        --warning: oklch(0.55 0.18 85);
+        --border: oklch(0.88 0.01 260);
+        --code-bg: oklch(0.92 0.01 260);
+        --ring: oklch(0.5 0.25 280);
+        --radius: 0.625rem;
+        --font-sans: "Inter", system-ui, -apple-system, sans-serif;
+        --font-mono: "JetBrains Mono", "Fira Code", ui-monospace, monospace;
+        --font-display: ui-serif, Georgia, "Times New Roman", serif;
+        /* derivados locais */
+        --edge: color-mix(in oklab, var(--foreground) 38%, transparent);
+        --edge-strong: color-mix(in oklab, var(--foreground) 68%, transparent);
+        --ok-bg: color-mix(in oklab, var(--success) 11%, var(--card));
+        --warn-bg: color-mix(in oklab, var(--warning) 13%, var(--card));
+        --bad-bg: color-mix(in oklab, var(--destructive) 9%, var(--card));
+        --pri-bg: color-mix(in oklab, var(--primary) 8%, var(--card));
+        --code-fg: var(--foreground);
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --background: oklch(0.15 0.02 260);
+          --foreground: oklch(0.9 0.01 260);
+          --card: oklch(0.22 0.02 260);
+          --card-foreground: oklch(0.9 0.01 260);
+          --muted: oklch(0.26 0.02 260);
+          --muted-foreground: oklch(0.72 0.02 260);
+          --primary: oklch(0.75 0.18 280);
+          --primary-foreground: oklch(0.15 0.02 260);
+          --accent: oklch(0.7 0.2 60);
+          --border: oklch(0.35 0.02 260);
+          --code-bg: oklch(0.26 0.02 260);
+          --destructive: oklch(0.65 0.2 25);
+          --success: oklch(0.72 0.17 150);
+          --warning: oklch(0.75 0.15 85);
+          --edge: color-mix(in oklab, var(--foreground) 34%, transparent);
+          --edge-strong: color-mix(
+            in oklab,
+            var(--foreground) 62%,
+            transparent
+          );
+          --ok-bg: color-mix(in oklab, var(--success) 13%, var(--card));
+          --warn-bg: color-mix(in oklab, var(--warning) 14%, var(--card));
+          --bad-bg: color-mix(in oklab, var(--destructive) 12%, var(--card));
+          --pri-bg: color-mix(in oklab, var(--primary) 13%, var(--card));
+        }
+      }
+      * {
+        box-sizing: border-box;
+      }
+      html {
+        scroll-behavior: smooth;
+      }
+      body {
+        margin: 0;
+        background: var(--background);
+        color: var(--foreground);
+        font-family: var(--font-sans);
+        font-size: 16px;
+        line-height: 1.62;
+        font-feature-settings: "tnum" 0;
+      }
+      .wrap {
+        max-width: 1080px;
+        margin: 0 auto;
+        padding: 0 28px 80px;
+      }
+      p {
+        max-width: 66ch;
+      }
+      h1,
+      h2,
+      h3 {
+        font-family: var(--font-display);
+        line-height: 1.16;
+        text-wrap: balance;
+      }
+      h1 {
+        font-size: clamp(1.9rem, 4.2vw, 2.9rem);
+        margin: 18px 0 10px;
+        letter-spacing: -0.01em;
+      }
+      h2 {
+        font-size: 1.55rem;
+        margin: 0 0 14px;
+      }
+      h2 .num {
+        color: var(--primary);
+        font-family: var(--font-mono);
+        font-size: 0.95rem;
+        vertical-align: 0.28em;
+        margin-right: 10px;
+        letter-spacing: 0.08em;
+      }
+      h3 {
+        font-size: 1.12rem;
+        margin: 26px 0 8px;
+      }
+      code,
+      .mono {
+        font-family: var(--font-mono);
+        font-size: 0.86em;
+      }
+      .eyebrow {
+        font-family: var(--font-mono);
+        font-size: 0.74rem;
+        letter-spacing: 0.22em;
+        text-transform: uppercase;
+        color: var(--primary);
+        margin-top: 56px;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px 18px;
+        align-items: baseline;
+      }
+      .eyebrow .date {
+        color: var(--muted-foreground);
+        letter-spacing: 0.12em;
+      }
+      /* ============ cartões e superfícies ============ */
+      .card {
+        background: var(--card);
+        border: 1.5px solid var(--border);
+        border-radius: var(--radius);
+      }
+      .prompt-box {
+        margin: 26px 0 8px;
+        padding: 16px 20px;
+        background: var(--muted);
+        border: 1.5px solid var(--border);
+        border-radius: var(--radius);
+        font-size: 0.94rem;
+      }
+      .prompt-box .tag {
+        display: block;
+        font-family: var(--font-mono);
+        font-size: 0.7rem;
+        letter-spacing: 0.18em;
+        text-transform: uppercase;
+        color: var(--muted-foreground);
+        margin-bottom: 6px;
+      }
+      .answer-hero {
+        margin: 34px 0 30px;
+        padding: 26px 30px;
+        background: var(--pri-bg);
+        border: 1.5px solid var(--primary);
+        border-radius: var(--radius);
+        box-shadow: 0 4px 24px
+          color-mix(in oklab, var(--primary) 10%, transparent);
+      }
+      .answer-hero .lead {
+        display: block;
+        font-family: var(--font-mono);
+        font-size: 0.72rem;
+        letter-spacing: 0.2em;
+        text-transform: uppercase;
+        color: var(--primary);
+        margin-bottom: 10px;
+      }
+      .answer-hero p {
+        font-size: 1.14rem;
+        line-height: 1.5;
+        margin: 0;
+      }
+      /* ============ KPI ============ */
+      .kpi-grid {
+        display: grid;
+        grid-template-columns: repeat(4, 1fr);
+        gap: 14px;
+        margin: 26px 0 10px;
+      }
+      .kpi {
+        background: var(--card);
+        border: 1.5px solid var(--border);
+        border-radius: var(--radius);
+        padding: 14px 16px 12px;
+      }
+      .kpi .v {
+        font-family: var(--font-mono);
+        font-size: 1.65rem;
+        font-weight: 700;
+        line-height: 1.1;
+        font-variant-numeric: tabular-nums;
+        color: var(--primary);
+      }
+      .kpi .k {
+        font-size: 0.8rem;
+        color: var(--muted-foreground);
+        margin-top: 4px;
+        line-height: 1.35;
+      }
+      .kpi.derived .v {
+        color: var(--accent);
+      }
+      .kpi .der {
+        display: inline-block;
+        font-family: var(--font-mono);
+        font-size: 0.64rem;
+        color: var(--muted-foreground);
+        border: 1px solid var(--border);
+        border-radius: 999px;
+        padding: 0 7px;
+        margin-left: 6px;
+        vertical-align: 0.35em;
+      }
+      /* ============ segmentos ============ */
+      .seg {
+        margin-top: 64px;
+      }
+      .seg p,
+      .seg li {
+        max-width: 68ch;
+      }
+      .lede {
+        color: var(--muted-foreground);
+        font-size: 1.02rem;
+        margin-top: -4px;
+      }
+      crit,
+      .crit {
+        background: color-mix(in oklab, var(--warning) 26%, transparent);
+        padding: 0 4px;
+        border-radius: 4px;
+        font-weight: 600;
+      }
+      /* ============ figuras ============ */
+      .fig-shell {
+        margin: 30px 0 18px;
+      }
+      .fig-shell .frame {
+        overflow: hidden;
+        background: var(--card);
+        border: 1.5px solid var(--border);
+        border-radius: var(--radius);
+        padding: 18px 14px 6px;
+      }
+      .fig-shell svg {
+        display: block;
+        width: 100%;
+        height: auto;
+      }
+      .fig-shell figcaption {
+        margin-top: 10px;
+        padding: 0 4px;
+      }
+      .fig-shell figcaption .claim {
+        display: block;
+        font-weight: 650;
+        font-size: 0.98rem;
+        max-width: 72ch;
+      }
+      .fig-shell figcaption .support {
+        display: block;
+        color: var(--muted-foreground);
+        font-size: 0.87rem;
+        margin-top: 3px;
+        max-width: 80ch;
+      }
+      .fig-shell .frame .fhead {
+        font-family: var(--font-mono);
+        font-size: 0.7rem;
+        letter-spacing: 0.18em;
+        text-transform: uppercase;
+        color: var(--muted-foreground);
+        margin: 0 0 10px 2px;
+      }
+      .fig-shell .frame .fhead .fno {
+        color: var(--primary);
+      }
+      /* nós e arestas SVG compartilhados */
+      svg text {
+        font-family: var(--font-sans);
+      }
+      svg text.m {
+        font-family: var(--font-mono);
+        font-size: 11px;
+      }
+      svg text.ms {
+        font-family: var(--font-mono);
+        font-size: 9px;
+      }
+      svg .n {
+        fill: var(--card);
+        stroke: var(--border);
+        stroke-width: 1.5;
+      }
+      svg .n.t {
+        fill: var(--pri-bg);
+        stroke: var(--primary);
+        stroke-width: 1.5;
+      }
+      svg .n.ok {
+        fill: var(--ok-bg);
+        stroke: var(--success);
+        stroke-width: 1.5;
+      }
+      svg .n.warn {
+        fill: var(--warn-bg);
+        stroke: var(--warning);
+        stroke-width: 1.5;
+      }
+      svg .n.bad {
+        fill: var(--bad-bg);
+        stroke: var(--destructive);
+        stroke-width: 1.5;
+      }
+      svg .n.strong {
+        stroke-width: 2.6;
+      }
+      svg .n.dashed {
+        stroke-dasharray: 5 4;
+      }
+      svg .tt {
+        fill: var(--foreground);
+        font-size: 13px;
+        font-weight: 600;
+      }
+      svg .ts {
+        fill: var(--muted-foreground);
+        font-size: 10.5px;
+      }
+      svg .edge {
+        stroke: var(--edge-strong);
+        stroke-width: 1.6;
+        fill: none;
+      }
+      svg .edge.dashed {
+        stroke-dasharray: 6 5;
+      }
+      svg .edge.deem {
+        stroke: var(--edge);
+      }
+      svg .el {
+        fill: var(--muted-foreground);
+        font-size: 10px;
+        font-family: var(--font-mono);
+      }
+      svg .el.imp {
+        fill: var(--foreground);
+        font-weight: 600;
+      }
+      /* ============ tabelas ============ */
+      .tbl-wrap {
+        overflow-x: auto;
+        margin: 18px 0;
+      }
+      table {
+        border-collapse: collapse;
+        width: 100%;
+        font-size: 0.9rem;
+        background: var(--card);
+        border: 1.5px solid var(--border);
+        border-radius: var(--radius);
+      }
+      th,
+      td {
+        text-align: left;
+        padding: 9px 14px;
+        border-bottom: 1px solid var(--border);
+        vertical-align: top;
+      }
+      th {
+        font-family: var(--font-mono);
+        font-size: 0.72rem;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+        color: var(--muted-foreground);
+        background: var(--muted);
+      }
+      tr:last-child td {
+        border-bottom: none;
+      }
+      td code {
+        font-size: 0.84em;
+      }
+      .pill {
+        display: inline-block;
+        font-family: var(--font-mono);
+        font-size: 0.68rem;
+        letter-spacing: 0.06em;
+        padding: 1px 8px;
+        border-radius: 999px;
+        border: 1px solid var(--border);
+      }
+      .pill.ok {
+        color: var(--success);
+        border-color: var(--success);
+      }
+      .pill.warn {
+        color: var(--warning);
+        border-color: var(--warning);
+      }
+      .pill.bad {
+        color: var(--destructive);
+        border-color: var(--destructive);
+      }
+      .pill.pri {
+        color: var(--primary);
+        border-color: var(--primary);
+      }
+      /* ============ timeline ============ */
+      .tl {
+        list-style: none;
+        margin: 22px 0 0;
+        padding: 0;
+      }
+      .tl li {
+        position: relative;
+        padding: 0 0 20px 34px;
+        border-left: 2px solid var(--border);
+        margin-left: 6px;
+      }
+      .tl li:last-child {
+        border-left-color: transparent;
+        padding-bottom: 4px;
+      }
+      .tl li::before {
+        content: "";
+        position: absolute;
+        left: -7px;
+        top: 4px;
+        width: 12px;
+        height: 12px;
+        border-radius: 50%;
+        background: var(--card);
+        border: 2.5px solid var(--primary);
+      }
+      .tl .t {
+        font-family: var(--font-mono);
+        font-size: 0.8rem;
+        color: var(--primary);
+        font-weight: 600;
+      }
+      .tl .d {
+        font-size: 0.92rem;
+      }
+      /* ============ dobras (details) ============ */
+      details.fold {
+        margin: 22px 0;
+        background: var(--card);
+        border: 1.5px solid var(--border);
+        border-radius: var(--radius);
+      }
+      details.fold > summary {
+        cursor: pointer;
+        padding: 14px 20px;
+        font-weight: 600;
+        font-size: 0.96rem;
+        list-style: none;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+      details.fold > summary::before {
+        content: "▸";
+        color: var(--primary);
+        font-size: 0.85rem;
+        transition: transform 0.15s ease;
+      }
+      details.fold[open] > summary::before {
+        transform: rotate(90deg);
+      }
+      details.fold > summary::-webkit-details-marker {
+        display: none;
+      }
+      details.fold > .fold-body {
+        padding: 4px 22px 20px;
+        border-top: 1px solid var(--border);
+      }
+      details.fold > .fold-body > p:first-child {
+        margin-top: 14px;
+      }
+      details.fold > summary:focus-visible,
+      a:focus-visible {
+        outline: 2px solid var(--ring);
+        outline-offset: 2px;
+        border-radius: 4px;
+      }
+      /* ============ misc ============ */
+      dfn.bw {
+        font-style: normal;
+        border-bottom: 1.5px dotted var(--primary);
+        cursor: help;
+      }
+      .note {
+        font-size: 0.86rem;
+        color: var(--muted-foreground);
+      }
+      .derived-note {
+        font-size: 0.78rem;
+        color: var(--muted-foreground);
+        font-family: var(--font-mono);
+      }
+      .grid-2 {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 16px;
+      }
+      .grid-2 > .card {
+        padding: 16px 20px;
+      }
+      .callout {
+        padding: 14px 18px;
+        border-radius: var(--radius);
+        border: 1.5px solid var(--border);
+        margin: 16px 0;
+        font-size: 0.94rem;
+      }
+      .callout.warn {
+        background: var(--warn-bg);
+        border-color: var(--warning);
+      }
+      .callout.ok {
+        background: var(--ok-bg);
+        border-color: var(--success);
+      }
+      .callout.critcall {
+        background: var(--bad-bg);
+        border-color: var(--destructive);
+      }
+      ul.clean {
+        padding-left: 20px;
+      }
+      ul.clean li {
+        margin: 6px 0;
+        max-width: 70ch;
+      }
+      .commit-list {
+        font-family: var(--font-mono);
+        font-size: 0.82rem;
+        line-height: 1.75;
+        background: var(--code-bg);
+        border: 1.5px solid var(--border);
+        border-radius: var(--radius);
+        padding: 14px 18px;
+        overflow-x: auto;
+        white-space: nowrap;
+      }
+      .commit-list .h {
+        color: var(--primary);
+        font-weight: 600;
+      }
+      footer {
+        margin-top: 90px;
+        padding-top: 22px;
+        border-top: 1.5px solid var(--border);
+        font-size: 0.8rem;
+        color: var(--muted-foreground);
+      }
+      footer p {
+        max-width: none;
+      }
+      @media (max-width: 760px) {
+        .kpi-grid {
+          grid-template-columns: repeat(2, 1fr);
+        }
+        .grid-2 {
+          grid-template-columns: 1fr;
+        }
+        .wrap {
+          padding: 0 16px 60px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <!-- ================= HEADER ================= -->
+      <header>
+        <div class="eyebrow">
+          <span>Explicador de execução · deep-orchestrator · Onda 7</span>
+          <span class="date"
+            >surf-agent-skill · 2026-08-30 · base main@13de39c</span
+          >
+        </div>
+        <h1>
+          O que a Onda 7 fez com os 85 defeitos restantes do surf-agent-skill —
+          e por que o portão saiu mais rápido do que entrou
+        </h1>
+        <div class="prompt-box">
+          <span class="tag">A missão (registrada nos fatos)</span>
+          Auditoria adversarial de 6 ondas (2026-08-29/30) achou 201 defeitos e
+          corrigiu 116; o resto estava em <code>docs/debito-tecnico.md</code>.
+          Esta execução (2026-08-30, deep-orchestrator) liquidou o restante:
+          <strong
+            >15 frentes paralelas em worktrees disjuntas (F1–F15) + Onda 2
+            (BUG-09) + 6 sub-tarefas de fix coordenadas</strong
+          >
+          — com portão por integração e zero acesso à rede.
+        </div>
+      </header>
 
-<!-- ================= HEADER ================= -->
-<header>
-  <div class="eyebrow">
-    <span>Explicador de execução · deep-orchestrator · Onda 7</span>
-    <span class="date">surf-agent-skill · 2026-08-30 · base main@13de39c</span>
-  </div>
-  <h1>O que a Onda 7 fez com os 85 defeitos restantes do surf-agent-skill — e por que o portão saiu mais rápido do que entrou</h1>
-  <div class="prompt-box">
-    <span class="tag">A missão (registrada nos fatos)</span>
-    Auditoria adversarial de 6 ondas (2026-08-29/30) achou 201 defeitos e corrigiu 116; o resto estava em <code>docs/debito-tecnico.md</code>. Esta execução (2026-08-30, deep-orchestrator) liquidou o restante: <strong>15 frentes paralelas em worktrees disjuntas (F1–F15) + Onda 2 (BUG-09) + 6 sub-tarefas de fix coordenadas</strong> — com portão por integração e zero acesso à rede.
-  </div>
-</header>
+      <!-- ================= RESPOSTA EM UMA FRASE ================= -->
+      <section class="answer-hero" aria-label="Resposta em uma frase">
+        <span class="lead">Resposta em uma frase</span>
+        <p>
+          A Onda 7 liquidou o débito técnico restante do surf-agent-skill com
+          <strong>15 frentes de agentes em worktrees isoladas</strong> + uma
+          onda extra (BUG-09) + fixes coordenados, entregues como
+          <strong>18 squash commits</strong> sob um portão que prova
+          <strong>zero rede</strong> (invariante <code>exit 78</code> sem chave)
+          — e, no fim, o portão ficou mais barato do que era:
+          <strong>npm test ~110s → ~24s</strong>,
+          <strong>smoke ~90s → 6,5s</strong>, com 3 validações independentes em
+          <strong>GATE GREEN</strong> e <strong>~1410 asserções</strong> totais
+          previstas.
+        </p>
+      </section>
 
-<!-- ================= RESPOSTA EM UMA FRASE ================= -->
-<section class="answer-hero" aria-label="Resposta em uma frase">
-  <span class="lead">Resposta em uma frase</span>
-  <p>A Onda 7 liquidou o débito técnico restante do surf-agent-skill com <strong>15 frentes de agentes em worktrees isoladas</strong> + uma onda extra (BUG-09) + fixes coordenados, entregues como <strong>18 squash commits</strong> sob um portão que prova <strong>zero rede</strong> (invariante <code>exit 78</code> sem chave) — e, no fim, o portão ficou mais barato do que era: <strong>npm test ~110s → ~24s</strong>, <strong>smoke ~90s → 6,5s</strong>, com 3 validações independentes em <strong>GATE GREEN</strong> e <strong>~1410 asserções</strong> totais previstas.</p>
-</section>
+      <!-- ================= KPI ================= -->
+      <section class="kpi-grid" aria-label="Números da execução">
+        <div class="kpi">
+          <div class="v">201</div>
+          <div class="k">
+            defeitos achados pela auditoria adversarial (6 ondas)
+          </div>
+        </div>
+        <div class="kpi">
+          <div class="v">116</div>
+          <div class="k">
+            corrigidos nas ondas 1–6; o saldo virou dívida registrada
+          </div>
+        </div>
+        <div class="kpi derived">
+          <div class="v">85<span class="der">201−116</span></div>
+          <div class="k">
+            saldo restante em <code>docs/debito-tecnico.md</code>, liquidado
+            pela Onda 7
+          </div>
+        </div>
+        <div class="kpi">
+          <div class="v">15</div>
+          <div class="k">frentes paralelas (F1–F15) em worktrees disjuntas</div>
+        </div>
+        <div class="kpi">
+          <div class="v">18</div>
+          <div class="k">
+            squash commits: Onda 7 (15) + Onda 2 (1) + fixes coordenados
+          </div>
+        </div>
+        <div class="kpi">
+          <div class="v">0</div>
+          <div class="k">
+            bugs proven no portão — gate-state foi de 24 fixed para 31 fixed
+          </div>
+        </div>
+        <div class="kpi">
+          <div class="v">~1410</div>
+          <div class="k">
+            asserções totais previstas (1097 da validação integrada + 3 suítes
+            novas: 69+115+129)
+          </div>
+        </div>
+        <div class="kpi">
+          <div class="v">~24s</div>
+          <div class="k">
+            custo do portão npm test (era ~110s); smoke foi de ~90s a 6,5s
+          </div>
+        </div>
+      </section>
+      <p class="derived-note">
+        Marcas &ldquo;201−116&rdquo; e razões de tempo (&times;4,6 / &times;14)
+        são aritmética direta sobre números do arquivo de fatos; nada além disso
+        foi calculado.
+      </p>
 
-<!-- ================= KPI ================= -->
-<section class="kpi-grid" aria-label="Números da execução">
-  <div class="kpi"><div class="v">201</div><div class="k">defeitos achados pela auditoria adversarial (6 ondas)</div></div>
-  <div class="kpi"><div class="v">116</div><div class="k">corrigidos nas ondas 1–6; o saldo virou dívida registrada</div></div>
-  <div class="kpi derived"><div class="v">85<span class="der">201−116</span></div><div class="k">saldo restante em <code>docs/debito-tecnico.md</code>, liquidado pela Onda 7</div></div>
-  <div class="kpi"><div class="v">15</div><div class="k">frentes paralelas (F1–F15) em worktrees disjuntas</div></div>
-  <div class="kpi"><div class="v">18</div><div class="k">squash commits: Onda 7 (15) + Onda 2 (1) + fixes coordenados</div></div>
-  <div class="kpi"><div class="v">0</div><div class="k">bugs proven no portão — gate-state foi de 24 fixed para 31 fixed</div></div>
-  <div class="kpi"><div class="v">~1410</div><div class="k">asserções totais previstas (1097 da validação integrada + 3 suítes novas: 69+115+129)</div></div>
-  <div class="kpi"><div class="v">~24s</div><div class="k">custo do portão npm test (era ~110s); smoke foi de ~90s a 6,5s</div></div>
-</section>
-<p class="derived-note">Marcas &ldquo;201−116&rdquo; e razões de tempo (&times;4,6 / &times;14) são aritmética direta sobre números do arquivo de fatos; nada além disso foi calculado.</p>
+      <!-- ================= SEGMENTO 01 ================= -->
+      <section class="seg" id="s1">
+        <h2>
+          <span class="num">01</span>O cenário: uma auditoria que achou 201
+          defeitos
+        </h2>
+        <p class="lede">
+          Antes da Onda 7 existia uma dívida conhecida, registrada e não paga.
+          Esta execução foi o acerto de contas.
+        </p>
+        <p>
+          Entre 2026-08-29 e 30,
+          <dfn
+            class="bw"
+            title="Revisão feita por agentes com instrução explícita de achar defeitos, não de aprovar"
+            >auditorias adversariais</dfn
+          >
+          — revisões cujo objetivo declarado é quebrar o código, não elogiá-lo —
+          caçaram defeitos no surf-agent-skill em 6 ondas. O resultado:
+          <strong>201 defeitos achados, 116 corrigidos</strong>. O que não foi
+          corrigido virou
+          <dfn
+            class="bw"
+            title="Trabalho de qualidade adiado que volta mais caro depois"
+            >débito técnico</dfn
+          >
+          documentado em <code>docs/debito-tecnico.md</code> — 85 itens por
+          aritmética direta (201 − 116).
+        </p>
+        <p>
+          A Onda 7 (2026-08-30, orquestrador
+          <dfn
+            class="bw"
+            title="Invólucro que divide a tarefa em ondas de agentes paralelos em worktrees, revisa e integra com portão"
+            >deep-orchestrator</dfn
+          >) recebeu a missão de <crit>liquidar esse saldo</crit>: 15 frentes
+          paralelas (F1–F15) em worktrees disjuntas, mais a Onda 2 (BUG-09) e 6
+          sub-tarefas de fix coordenadas.
+        </p>
 
-<!-- ================= SEGMENTO 01 ================= -->
-<section class="seg" id="s1">
-  <h2><span class="num">01</span>O cenário: uma auditoria que achou 201 defeitos</h2>
-  <p class="lede">Antes da Onda 7 existia uma dívida conhecida, registrada e não paga. Esta execução foi o acerto de contas.</p>
-  <p>Entre 2026-08-29 e 30, <dfn class="bw" title="Revisão feita por agentes com instrução explícita de achar defeitos, não de aprovar">auditorias adversariais</dfn> — revisões cujo objetivo declarado é quebrar o código, não elogiá-lo — caçaram defeitos no surf-agent-skill em 6 ondas. O resultado: <strong>201 defeitos achados, 116 corrigidos</strong>. O que não foi corrigido virou <dfn class="bw" title="Trabalho de qualidade adiado que volta mais caro depois">débito técnico</dfn> documentado em <code>docs/debito-tecnico.md</code> — 85 itens por aritmética direta (201 − 116).</p>
-  <p>A Onda 7 (2026-08-30, orquestrador <dfn class="bw" title="Invólucro que divide a tarefa em ondas de agentes paralelos em worktrees, revisa e integra com portão">deep-orchestrator</dfn>) recebeu a missão de <crit>liquidar esse saldo</crit>: 15 frentes paralelas (F1–F15) em worktrees disjuntas, mais a Onda 2 (BUG-09) e 6 sub-tarefas de fix coordenadas.</p>
+        <figure class="fig-shell">
+          <div
+            class="frame"
+            role="img"
+            aria-label="Fluxo: auditoria adversarial acha 201 defeitos; 116 corrigidos; saldo de 85 registrado em docs/debito-tecnico.md; a Onda 7 liquida o saldo com 15 frentes e entrega main em GATE GREEN com 18 squash commits."
+          >
+            <p class="fhead">
+              <span class="fno">Figura 1</span> · do débito à liquidação
+            </p>
+            <svg viewBox="0 0 1000 540" xmlns="http://www.w3.org/2000/svg">
+              <defs>
+                <marker
+                  id="arr1"
+                  viewBox="0 0 10 10"
+                  refX="9"
+                  refY="5"
+                  markerWidth="7"
+                  markerHeight="7"
+                  orient="auto-start-reverse"
+                >
+                  <path d="M0 0 L10 5 L0 10 z" fill="var(--edge-strong)" />
+                </marker>
+              </defs>
+              <rect
+                class="n t"
+                x="310"
+                y="26"
+                width="380"
+                height="66"
+                rx="14"
+              />
+              <text class="tt" x="500" y="52" text-anchor="middle">
+                AUDITORIA ADVERSARIAL
+              </text>
+              <text class="ts" x="500" y="72" text-anchor="middle">
+                6 ondas · 2026-08-29/30
+              </text>
+              <rect class="n" x="60" y="200" width="250" height="80" rx="12" />
+              <text class="tt" x="185" y="234" text-anchor="middle">
+                116 corrigidos
+              </text>
+              <text class="ts" x="185" y="254" text-anchor="middle">
+                nas ondas 1–6
+              </text>
+              <rect
+                class="n warn"
+                x="375"
+                y="200"
+                width="260"
+                height="80"
+                rx="12"
+              />
+              <text class="tt" x="505" y="234" text-anchor="middle">
+                docs/debito-tecnico.md
+              </text>
+              <text class="ts" x="505" y="254" text-anchor="middle">
+                85 restantes registrados (201 − 116)
+              </text>
+              <rect
+                class="n t strong"
+                x="690"
+                y="200"
+                width="260"
+                height="80"
+                rx="12"
+              />
+              <text class="tt" x="820" y="234" text-anchor="middle">
+                ONDA 7 · deep-orchestrator
+              </text>
+              <text class="ts" x="820" y="254" text-anchor="middle">
+                15 frentes + Onda 2 (BUG-09) + fixes
+              </text>
+              <rect
+                class="n ok"
+                x="350"
+                y="400"
+                width="320"
+                height="82"
+                rx="12"
+              />
+              <text class="tt" x="510" y="434" text-anchor="middle">
+                main · GATE GREEN
+              </text>
+              <text class="ts" x="510" y="456" text-anchor="middle">
+                18 squash commits · 0 falhas
+              </text>
+              <path
+                class="edge"
+                d="M 480 92 C 400 130 260 150 200 196"
+                marker-end="url(#arr1)"
+              />
+              <text class="el" x="250" y="148">
+                201 achados → 116 corrigidos
+              </text>
+              <path
+                class="edge"
+                d="M 520 92 C 522 130 516 150 512 196"
+                marker-end="url(#arr1)"
+              />
+              <text class="el imp" x="560" y="145">
+                85 restantes (201 − 116)
+              </text>
+              <path
+                class="edge"
+                d="M 635 240 L 686 240"
+                marker-end="url(#arr1)"
+              />
+              <text class="el" x="648" y="228">liquida o saldo</text>
+              <path
+                class="edge"
+                d="M 820 284 C 760 320 660 350 600 396"
+                marker-end="url(#arr1)"
+              />
+              <text class="el imp" x="690" y="348">
+                18 squash commits · GATE GREEN
+              </text>
+            </svg>
+          </div>
+          <figcaption>
+            <span class="claim"
+              >Uma auditoria adversarial de 6 ondas achou 201 defeitos e
+              corrigiu 116; a Onda 7 liquidou o saldo restante (85, por 201 −
+              116) registrado em <code>docs/debito-tecnico.md</code> e entregou
+              <code>main</code> em GATE GREEN.</span
+            >
+            <span class="support"
+              >Caminho crítico: o nó amarelo (saldo registrado) é o alvo da
+              execução — o nó roxo (Onda 7) é a única rota que o liquida.</span
+            >
+          </figcaption>
+        </figure>
+      </section>
 
-  <figure class="fig-shell">
-    <div class="frame" role="img" aria-label="Fluxo: auditoria adversarial acha 201 defeitos; 116 corrigidos; saldo de 85 registrado em docs/debito-tecnico.md; a Onda 7 liquida o saldo com 15 frentes e entrega main em GATE GREEN com 18 squash commits.">
-      <p class="fhead"><span class="fno">Figura 1</span> · do débito à liquidação</p>
-      <svg viewBox="0 0 1000 540" xmlns="http://www.w3.org/2000/svg">
-        <defs>
-          <marker id="arr1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="var(--edge-strong)"/></marker>
-        </defs>
-        <rect class="n t" x="310" y="26" width="380" height="66" rx="14"/>
-        <text class="tt" x="500" y="52" text-anchor="middle">AUDITORIA ADVERSARIAL</text>
-        <text class="ts" x="500" y="72" text-anchor="middle">6 ondas · 2026-08-29/30</text>
-        <rect class="n" x="60" y="200" width="250" height="80" rx="12"/>
-        <text class="tt" x="185" y="234" text-anchor="middle">116 corrigidos</text>
-        <text class="ts" x="185" y="254" text-anchor="middle">nas ondas 1–6</text>
-        <rect class="n warn" x="375" y="200" width="260" height="80" rx="12"/>
-        <text class="tt" x="505" y="234" text-anchor="middle">docs/debito-tecnico.md</text>
-        <text class="ts" x="505" y="254" text-anchor="middle">85 restantes registrados (201 − 116)</text>
-        <rect class="n t strong" x="690" y="200" width="260" height="80" rx="12"/>
-        <text class="tt" x="820" y="234" text-anchor="middle">ONDA 7 · deep-orchestrator</text>
-        <text class="ts" x="820" y="254" text-anchor="middle">15 frentes + Onda 2 (BUG-09) + fixes</text>
-        <rect class="n ok" x="350" y="400" width="320" height="82" rx="12"/>
-        <text class="tt" x="510" y="434" text-anchor="middle">main · GATE GREEN</text>
-        <text class="ts" x="510" y="456" text-anchor="middle">18 squash commits · 0 falhas</text>
-        <path class="edge" d="M 480 92 C 400 130 260 150 200 196" marker-end="url(#arr1)"/>
-        <text class="el" x="250" y="148">201 achados → 116 corrigidos</text>
-        <path class="edge" d="M 520 92 C 522 130 516 150 512 196" marker-end="url(#arr1)"/>
-        <text class="el imp" x="560" y="145">85 restantes (201 − 116)</text>
-        <path class="edge" d="M 635 240 L 686 240" marker-end="url(#arr1)"/>
-        <text class="el" x="648" y="228">liquida o saldo</text>
-        <path class="edge" d="M 820 284 C 760 320 660 350 600 396" marker-end="url(#arr1)"/>
-        <text class="el imp" x="690" y="348">18 squash commits · GATE GREEN</text>
-      </svg>
+      <!-- ================= SEGMENTO 02 ================= -->
+      <section class="seg" id="s2">
+        <h2>
+          <span class="num">02</span>A máquina: 15 frentes em worktrees
+          disjuntas
+        </h2>
+        <p class="lede">
+          Paralelizar 15 frentes de correção sem que uma pise na outra — e sem
+          deixar nada entrar sem conferência.
+        </p>
+        <p>
+          Cada frente F1–F15 ganhou uma
+          <dfn
+            class="bw"
+            title="Cópia de trabalho isolada do mesmo repositório (git worktree), com branch própria, que não conflita com as outras"
+            >worktree</dfn
+          >
+          própria, criada a partir de <code>main@13de39c</code>. Worktrees
+          disjuntas significam que os 15 agentes editam árvores de arquivos
+          separadas: não há conflito de edição entre frentes, e o orquestrador
+          sabe exatamente o que cada uma mudou. Uma
+          <dfn
+            class="bw"
+            title="Espera coletiva: a onda seguinte só dispara quando todos os agentes da onda anterior terminaram"
+            >barreira</dfn
+          >
+          garante que a Onda 2 e as sub-tarefas só rodem depois que a Onda 7
+          convergiu; sub-tarefas de
+          <dfn
+            class="bw"
+            title="Onda de teste/validação que roda junto da onda seguinte, não depois dela"
+            >subwave</dfn
+          >
+          acompanham a integração.
+        </p>
+        <p>
+          Cada entrega entra por
+          <dfn
+            class="bw"
+            title="Integrar uma pilha de commits como um commit único, com histórico limpo"
+            >squash-merge</dfn
+          >
+          — um commit por frente — e
+          <crit>só depois de passar o portão</crit> (<dfn
+            class="bw"
+            title="Cheque obrigatório (build + testes + lint) que bloqueia a integração se falhar"
+            >gate</dfn
+          >) sobre uma foto do estado integrado. Quando o planejamento revelava
+          trabalho novo, o orquestrador
+          <dfn
+            class="bw"
+            title="Replanejamento do orquestrador quando uma onda revela trabalho novo"
+            >replanejava</dfn
+          >: o REPLAN v1 foi interrompido, o v2 achou o BUG-09 (executado), e o
+          v3 chegou à
+          <dfn
+            class="bw"
+            title="Estado em que replanejamentos sucessivos não encontram mais trabalho novo"
+            >convergência</dfn
+          >.
+        </p>
+
+        <figure class="fig-shell">
+          <div
+            class="frame"
+            role="img"
+            aria-label="Diagrama: main cria 15 worktrees disjuntas F1 a F15; cada frente faz squash-merge de um commit que passa pelo portão build+test+lint antes de entrar; subwaves de teste e validação rodam junto da onda seguinte; o REPLAN v2 achou o BUG-09."
+          >
+            <p class="fhead">
+              <span class="fno">Figura 2</span> · paralelismo com portão
+            </p>
+            <svg viewBox="0 0 1000 600" xmlns="http://www.w3.org/2000/svg">
+              <defs>
+                <marker
+                  id="arr2"
+                  viewBox="0 0 10 10"
+                  refX="9"
+                  refY="5"
+                  markerWidth="7"
+                  markerHeight="7"
+                  orient="auto-start-reverse"
+                >
+                  <path d="M0 0 L10 5 L0 10 z" fill="var(--edge-strong)" />
+                </marker>
+                <marker
+                  id="arr2d"
+                  viewBox="0 0 10 10"
+                  refX="9"
+                  refY="5"
+                  markerWidth="7"
+                  markerHeight="7"
+                  orient="auto-start-reverse"
+                >
+                  <path d="M0 0 L10 5 L0 10 z" fill="var(--edge)" />
+                </marker>
+              </defs>
+              <rect
+                class="n t"
+                x="20"
+                y="250"
+                width="150"
+                height="88"
+                rx="12"
+              />
+              <text class="tt" x="95" y="286" text-anchor="middle">main</text>
+              <text
+                class="ms"
+                x="95"
+                y="306"
+                text-anchor="middle"
+                fill="var(--muted-foreground)"
+              >
+                13de39c
+              </text>
+              <g>
+                <rect
+                  class="n"
+                  x="262"
+                  y="120"
+                  width="118"
+                  height="52"
+                  rx="9"
+                />
+                <text
+                  class="ms"
+                  x="321"
+                  y="142"
+                  text-anchor="middle"
+                  fill="var(--foreground)"
+                >
+                  F1
+                </text>
+                <text
+                  class="ms"
+                  x="321"
+                  y="158"
+                  text-anchor="middle"
+                  fill="var(--muted-foreground)"
+                >
+                  preflight
+                </text>
+                <rect
+                  class="n"
+                  x="392"
+                  y="120"
+                  width="118"
+                  height="52"
+                  rx="9"
+                />
+                <text
+                  class="ms"
+                  x="451"
+                  y="142"
+                  text-anchor="middle"
+                  fill="var(--foreground)"
+                >
+                  F2
+                </text>
+                <text
+                  class="ms"
+                  x="451"
+                  y="158"
+                  text-anchor="middle"
+                  fill="var(--muted-foreground)"
+                >
+                  state
+                </text>
+                <rect
+                  class="n"
+                  x="522"
+                  y="120"
+                  width="118"
+                  height="52"
+                  rx="9"
+                />
+                <text
+                  class="ms"
+                  x="581"
+                  y="142"
+                  text-anchor="middle"
+                  fill="var(--foreground)"
+                >
+                  F3
+                </text>
+                <text
+                  class="ms"
+                  x="581"
+                  y="158"
+                  text-anchor="middle"
+                  fill="var(--muted-foreground)"
+                >
+                  dispatch
+                </text>
+                <rect
+                  class="n"
+                  x="652"
+                  y="120"
+                  width="118"
+                  height="52"
+                  rx="9"
+                />
+                <text
+                  class="ms"
+                  x="711"
+                  y="142"
+                  text-anchor="middle"
+                  fill="var(--foreground)"
+                >
+                  F4
+                </text>
+                <text
+                  class="ms"
+                  x="711"
+                  y="158"
+                  text-anchor="middle"
+                  fill="var(--muted-foreground)"
+                >
+                  env
+                </text>
+                <rect
+                  class="n"
+                  x="782"
+                  y="120"
+                  width="118"
+                  height="52"
+                  rx="9"
+                />
+                <text
+                  class="ms"
+                  x="841"
+                  y="142"
+                  text-anchor="middle"
+                  fill="var(--foreground)"
+                >
+                  F5
+                </text>
+                <text
+                  class="ms"
+                  x="841"
+                  y="158"
+                  text-anchor="middle"
+                  fill="var(--muted-foreground)"
+                >
+                  api/search
+                </text>
+                <rect
+                  class="n"
+                  x="262"
+                  y="184"
+                  width="118"
+                  height="52"
+                  rx="9"
+                />
+                <text
+                  class="ms"
+                  x="321"
+                  y="206"
+                  text-anchor="middle"
+                  fill="var(--foreground)"
+                >
+                  F6
+                </text>
+                <text
+                  class="ms"
+                  x="321"
+                  y="222"
+                  text-anchor="middle"
+                  fill="var(--muted-foreground)"
+                >
+                  ratelimit+cache
+                </text>
+                <rect
+                  class="n"
+                  x="392"
+                  y="184"
+                  width="118"
+                  height="52"
+                  rx="9"
+                />
+                <text
+                  class="ms"
+                  x="451"
+                  y="206"
+                  text-anchor="middle"
+                  fill="var(--foreground)"
+                >
+                  F7
+                </text>
+                <text
+                  class="ms"
+                  x="451"
+                  y="222"
+                  text-anchor="middle"
+                  fill="var(--muted-foreground)"
+                >
+                  brave-limits
+                </text>
+                <rect
+                  class="n"
+                  x="522"
+                  y="184"
+                  width="118"
+                  height="52"
+                  rx="9"
+                />
+                <text
+                  class="ms"
+                  x="581"
+                  y="206"
+                  text-anchor="middle"
+                  fill="var(--foreground)"
+                >
+                  F8
+                </text>
+                <text
+                  class="ms"
+                  x="581"
+                  y="222"
+                  text-anchor="middle"
+                  fill="var(--muted-foreground)"
+                >
+                  orchestrator
+                </text>
+                <rect
+                  class="n"
+                  x="652"
+                  y="184"
+                  width="118"
+                  height="52"
+                  rx="9"
+                />
+                <text
+                  class="ms"
+                  x="711"
+                  y="206"
+                  text-anchor="middle"
+                  fill="var(--foreground)"
+                >
+                  F9
+                </text>
+                <text
+                  class="ms"
+                  x="711"
+                  y="222"
+                  text-anchor="middle"
+                  fill="var(--muted-foreground)"
+                >
+                  openrouter
+                </text>
+                <rect
+                  class="n"
+                  x="782"
+                  y="184"
+                  width="118"
+                  height="52"
+                  rx="9"
+                />
+                <text
+                  class="ms"
+                  x="841"
+                  y="206"
+                  text-anchor="middle"
+                  fill="var(--foreground)"
+                >
+                  F10
+                </text>
+                <text
+                  class="ms"
+                  x="841"
+                  y="222"
+                  text-anchor="middle"
+                  fill="var(--muted-foreground)"
+                >
+                  html
+                </text>
+                <rect
+                  class="n"
+                  x="262"
+                  y="248"
+                  width="118"
+                  height="52"
+                  rx="9"
+                />
+                <text
+                  class="ms"
+                  x="321"
+                  y="270"
+                  text-anchor="middle"
+                  fill="var(--foreground)"
+                >
+                  F11
+                </text>
+                <text
+                  class="ms"
+                  x="321"
+                  y="286"
+                  text-anchor="middle"
+                  fill="var(--muted-foreground)"
+                >
+                  ledger
+                </text>
+                <rect
+                  class="n"
+                  x="392"
+                  y="248"
+                  width="118"
+                  height="52"
+                  rx="9"
+                />
+                <text
+                  class="ms"
+                  x="451"
+                  y="270"
+                  text-anchor="middle"
+                  fill="var(--foreground)"
+                >
+                  F12
+                </text>
+                <text
+                  class="ms"
+                  x="451"
+                  y="286"
+                  text-anchor="middle"
+                  fill="var(--muted-foreground)"
+                >
+                  install
+                </text>
+                <rect
+                  class="n"
+                  x="522"
+                  y="248"
+                  width="118"
+                  height="52"
+                  rx="9"
+                />
+                <text
+                  class="ms"
+                  x="581"
+                  y="270"
+                  text-anchor="middle"
+                  fill="var(--foreground)"
+                >
+                  F13
+                </text>
+                <text
+                  class="ms"
+                  x="581"
+                  y="286"
+                  text-anchor="middle"
+                  fill="var(--muted-foreground)"
+                >
+                  CLI
+                </text>
+                <rect
+                  class="n"
+                  x="652"
+                  y="248"
+                  width="118"
+                  height="52"
+                  rx="9"
+                />
+                <text
+                  class="ms"
+                  x="711"
+                  y="270"
+                  text-anchor="middle"
+                  fill="var(--foreground)"
+                >
+                  F14
+                </text>
+                <text
+                  class="ms"
+                  x="711"
+                  y="286"
+                  text-anchor="middle"
+                  fill="var(--muted-foreground)"
+                >
+                  README/surf
+                </text>
+                <rect
+                  class="n"
+                  x="782"
+                  y="248"
+                  width="118"
+                  height="52"
+                  rx="9"
+                />
+                <text
+                  class="ms"
+                  x="841"
+                  y="270"
+                  text-anchor="middle"
+                  fill="var(--foreground)"
+                >
+                  F15
+                </text>
+                <text
+                  class="ms"
+                  x="841"
+                  y="286"
+                  text-anchor="middle"
+                  fill="var(--muted-foreground)"
+                >
+                  SKILL.md
+                </text>
+              </g>
+              <path
+                class="edge"
+                d="M 170 294 C 210 260 230 200 258 190"
+                marker-end="url(#arr2)"
+              />
+              <text class="el" x="150" y="352">
+                worktree disjunta por frente
+              </text>
+              <text class="el" x="150" y="368">
+                (git worktree · sem conflito)
+              </text>
+              <rect
+                class="n strong"
+                x="262"
+                y="396"
+                width="340"
+                height="76"
+                rx="12"
+              />
+              <text class="tt" x="432" y="428" text-anchor="middle">
+                PORTÃO (GATE)
+              </text>
+              <text class="ts" x="432" y="450" text-anchor="middle">
+                build + test + lint · snapshot integrado
+              </text>
+              <path
+                class="edge"
+                d="M 432 300 C 432 340 432 356 432 392"
+                marker-end="url(#arr2)"
+              />
+              <text class="el imp" x="446" y="350">
+                squash-merge 1 a 1 com gate
+              </text>
+              <rect
+                class="n ok"
+                x="640"
+                y="396"
+                width="260"
+                height="76"
+                rx="12"
+              />
+              <text class="tt" x="770" y="428" text-anchor="middle">
+                main · integrado
+              </text>
+              <text class="ts" x="770" y="450" text-anchor="middle">
+                GATE GREEN · 3 validações
+              </text>
+              <path
+                class="edge"
+                d="M 602 434 L 636 434"
+                marker-end="url(#arr2)"
+              />
+              <text class="el" x="606" y="422">
+                verde entra · vermelho volta
+              </text>
+              <rect
+                class="n dashed"
+                x="640"
+                y="120"
+                width="320"
+                height="104"
+                rx="12"
+              />
+              <text class="tt" x="800" y="148" text-anchor="middle">
+                SUBWAVE + REPLAN
+              </text>
+              <text class="ts" x="800" y="168" text-anchor="middle">
+                testes/validação da onda anterior rodam
+              </text>
+              <text class="ts" x="800" y="184" text-anchor="middle">
+                junto da onda seguinte
+              </text>
+              <text class="ts" x="800" y="204" text-anchor="middle">
+                REPLAN v1 → v2 (BUG-09) → v3 convergência
+              </text>
+              <path
+                class="edge dashed deem"
+                d="M 782 172 C 762 172 760 170 752 170"
+                marker-end="url(#arr2d)"
+              />
+              <text class="el" x="800" y="106">teste/validação</text>
+              <text class="el" x="800" y="120">acompanha a integração</text>
+            </svg>
+          </div>
+          <figcaption>
+            <span class="claim"
+              >15 worktrees disjuntas (F1–F15) rodam frentes em paralelo sem
+              conflito; cada integração é um
+              <crit>squash-merge que só entra após o portão verde</crit> sobre o
+              snapshot integrado.</span
+            >
+            <span class="support"
+              >O portão é o funil único de entrada: nada chega a
+              <code>main</code> sem build + teste + lint verdes. Subwaves de
+              teste/validação e o ciclo de replanejamento (que achou o BUG-09)
+              fecham o laço.</span
+            >
+          </figcaption>
+        </figure>
+      </section>
+
+      <!-- ================= SEGMENTO 03 ================= -->
+      <section class="seg" id="s3">
+        <h2>
+          <span class="num">03</span>O invariante: sem chave, o pipeline para
+          com exit 78
+        </h2>
+        <p class="lede">
+          A regra da tarefa proibia pesquisa web. O orquestrador transformou a
+          proibição num invariante de código — e instrumentou a prova.
+        </p>
+        <p>
+          Um
+          <dfn class="bw" title="Propriedade que deve valer em toda execução"
+            >invariante</dfn
+          >
+          da execução:
+          <strong
+            >sem chave Brave válida, o fan-out de busca para com
+            <code>exit 78</code></strong
+          >
+          — o código de saída padrão &ldquo;configuration error&rdquo;, aqui a
+          parada obrigatória (defeito G4, já fechado na frente F5).
+          <dfn
+            class="bw"
+            title="Ponto que espalha o trabalho para muitas filhas; aqui, o disparo de buscas para os provedores"
+            >Fan-out</dfn
+          >
+          é o ponto em que uma chamada se multiplica — e é exatamente onde o
+          vazamento de rede aconteceria se a regra fosse só &ldquo;boa
+          intenção&rdquo;.
+        </p>
+        <p>
+          A prova de cumprimento foi por
+          <dfn
+            class="bw"
+            title="Módulo injetado antes de o programa rodar que intercepta e conta cada tentativa de rede"
+            >preload</dfn
+          >: um módulo carregado antes de cada processo contava tentativas de
+          rede. Nos gates, todos os processos apresentaram
+          <crit>contadores na faixa 63–190 — todos 0</crit>. Zero
+          <code>surf</code>, zero <code>curl</code> (decisão autônoma D-A1, em
+          respeito à cota de ~117 buscas/mês da regra R1).
+        </p>
+
+        <figure class="fig-shell">
+          <div
+            class="frame"
+            role="img"
+            aria-label="Fluxo de decisão: chamada de busca chega ao fan-out; existe chave Brave válida? Sim: busca prossegue sob cota de ~117 buscas por mês. Não: pipeline para com exit 78. Painel inferior: prova por instrumentação — contadores 63 a 190 por processo, todos zero por gate, preload antes do app."
+          >
+            <p class="fhead">
+              <span class="fno">Figura 3</span> · o invariante do sem-chave
+            </p>
+            <svg viewBox="0 0 1000 500" xmlns="http://www.w3.org/2000/svg">
+              <defs>
+                <marker
+                  id="arr3"
+                  viewBox="0 0 10 10"
+                  refX="9"
+                  refY="5"
+                  markerWidth="7"
+                  markerHeight="7"
+                  orient="auto-start-reverse"
+                >
+                  <path d="M0 0 L10 5 L0 10 z" fill="var(--edge-strong)" />
+                </marker>
+                <marker
+                  id="arr3d"
+                  viewBox="0 0 10 10"
+                  refX="9"
+                  refY="5"
+                  markerWidth="7"
+                  markerHeight="7"
+                  orient="auto-start-reverse"
+                >
+                  <path d="M0 0 L10 5 L0 10 z" fill="var(--edge)" />
+                </marker>
+              </defs>
+              <rect
+                class="n t"
+                x="40"
+                y="200"
+                width="220"
+                height="76"
+                rx="12"
+              />
+              <text class="tt" x="150" y="234" text-anchor="middle">
+                FAN-OUT da busca
+              </text>
+              <text class="ts" x="150" y="254" text-anchor="middle">
+                chamada espalha p/ provedores
+              </text>
+              <polygon
+                class="n warn"
+                points="560,150 700,238 560,326 420,238"
+              />
+              <text class="tt" x="560" y="232" text-anchor="middle">
+                chave Brave
+              </text>
+              <text class="tt" x="560" y="252" text-anchor="middle">
+                válida?
+              </text>
+              <rect
+                class="n ok"
+                x="760"
+                y="126"
+                width="200"
+                height="66"
+                rx="12"
+              />
+              <text class="tt" x="860" y="156" text-anchor="middle">
+                busca prossegue
+              </text>
+              <text class="ts" x="860" y="176" text-anchor="middle">
+                cota ~117 buscas/mês (R1)
+              </text>
+              <rect
+                class="n bad strong"
+                x="760"
+                y="300"
+                width="200"
+                height="72"
+                rx="12"
+              />
+              <text class="tt" x="860" y="332" text-anchor="middle">
+                exit 78
+              </text>
+              <text class="ts" x="860" y="352" text-anchor="middle">
+                pipeline para · invariante
+              </text>
+              <path
+                class="edge"
+                d="M 260 238 C 320 238 360 238 416 238"
+                marker-end="url(#arr3)"
+              />
+              <text class="el" x="330" y="228">entra a chamada</text>
+              <path
+                class="edge"
+                d="M 700 196 C 724 182 738 172 756 164"
+                marker-end="url(#arr3)"
+              />
+              <text class="el imp" x="710" y="178">sim</text>
+              <path
+                class="edge"
+                d="M 700 280 C 724 294 738 304 756 314"
+                marker-end="url(#arr3)"
+              />
+              <text class="el imp" x="710" y="300">não</text>
+              <rect
+                class="n dashed"
+                x="40"
+                y="392"
+                width="920"
+                height="92"
+                rx="12"
+              />
+              <text class="tt" x="500" y="420" text-anchor="middle">
+                PROVA DE ZERO REDE (instrumentação)
+              </text>
+              <text class="ts" x="500" y="442" text-anchor="middle">
+                contadores de rede em todos os processos · faixa 63–190 · todos
+                0 por gate
+              </text>
+              <text class="ts" x="500" y="460" text-anchor="middle">
+                preload injetado antes do app · zero surf · zero curl (D-A1)
+              </text>
+              <path
+                class="edge dashed deem"
+                d="M 860 372 L 860 388"
+                marker-end="url(#arr3d)"
+              />
+              <text class="el" x="874" y="382">toda execução mede</text>
+            </svg>
+          </div>
+          <figcaption>
+            <span class="claim"
+              >Sem chave Brave válida, o fan-out de busca para com
+              <code>exit 78</code> — e a prova de que nada buscou na web está
+              nos contadores (63–190 por processo, todos 0 em cada gate).</span
+            >
+            <span class="support"
+              >Caminho crítico: a ramificação &ldquo;não&rdquo; (vermelha) e o
+              painel de instrumentação — o invariante só vale se a medição
+              estiver em todos os processos.</span
+            >
+          </figcaption>
+        </figure>
+      </section>
+
+      <!-- ================= SEGMENTO 04 ================= -->
+      <section class="seg" id="s4">
+        <h2>
+          <span class="num">04</span>O incidente das 01:43 — e os 6 alibis
+        </h2>
+        <p class="lede">
+          Na madrugada da execução, um arquivo de cache mudou. A investigação
+          precisou provar que não foi o pipeline.
+        </p>
+        <p>
+          Às 01:43:19, <code>~/.cache/surf/ratelimit.json</code> registrou
+          movimento:
+          <strong
+            >7 buscas reais numa chave <code>50rps</code> com
+            <crit>ZERO cota</crit></strong
+          >. Se o pipeline tivesse buscado, a regra da tarefa estaria quebrada.
+          A apuração produziu
+          <dfn
+            class="bw"
+            title="Evidência independente mostrando que um evento não aconteceu — aqui, que não houve busca saindo do pipeline"
+            >6 alibis independentes</dfn
+          >, entre eles: <code>keys.json</code>
+          <dfn
+            class="bw"
+            title="O arquivo não mudou um byte sequer — comparado por hash"
+            >byte-idêntico</dfn
+          >, os contadores de rede zerados em todos os processos, e o
+          <dfn
+            class="bw"
+            title="Hash que resume um arquivo; md5 igual na prática significa conteúdo igual"
+            >md5</dfn
+          >
+          do <code>ratelimit.json</code> estável (74639fbb) depois do incidente.
+          O veredito registrado: o movimento tem assinatura de uso externo, e o
+          hold de cota até 31/08 foi tratado como estado real —
+          <crit>não restaurado</crit> (decisão D-A6).
+        </p>
+
+        <figure class="fig-shell">
+          <div
+            class="frame"
+            role="img"
+            aria-label="Incidente: às 01:43:19 o ratelimit.json muda; assinatura externa: 7 buscas reais numa chave de 50rps com cota zero. O pipeline desta execução tem contadores zerados e keys.json byte-idêntico; os 6 alibis independentes provam origem externa; hold de cota até 31/08 mantido como estado real."
+          >
+            <p class="fhead">
+              <span class="fno">Figura 4</span> · a cadeia de alibis
+            </p>
+            <svg viewBox="0 0 1000 470" xmlns="http://www.w3.org/2000/svg">
+              <defs>
+                <marker
+                  id="arr4"
+                  viewBox="0 0 10 10"
+                  refX="9"
+                  refY="5"
+                  markerWidth="7"
+                  markerHeight="7"
+                  orient="auto-start-reverse"
+                >
+                  <path d="M0 0 L10 5 L0 10 z" fill="var(--edge-strong)" />
+                </marker>
+              </defs>
+              <rect
+                class="n warn"
+                x="40"
+                y="60"
+                width="300"
+                height="92"
+                rx="12"
+              />
+              <text class="tt" x="190" y="92" text-anchor="middle">
+                01:43:19 · incidente
+              </text>
+              <text class="ts" x="190" y="112" text-anchor="middle">
+                ~/.cache/surf/ratelimit.json muda
+              </text>
+              <text class="ts" x="190" y="130" text-anchor="middle">
+                hold de cota até 31/08
+              </text>
+              <rect
+                class="n bad"
+                x="420"
+                y="60"
+                width="340"
+                height="92"
+                rx="12"
+              />
+              <text class="tt" x="590" y="92" text-anchor="middle">
+                assinatura externa
+              </text>
+              <text class="ts" x="590" y="112" text-anchor="middle">
+                7 buscas reais na chave 50rps
+              </text>
+              <text class="ts" x="590" y="130" text-anchor="middle">
+                ZERO-cota · não é o pipeline
+              </text>
+              <path
+                class="edge"
+                d="M 340 106 L 416 106"
+                marker-end="url(#arr4)"
+              />
+              <text class="el" x="360" y="94">7 buscas reais</text>
+              <rect class="n" x="40" y="300" width="340" height="104" rx="12" />
+              <text class="tt" x="210" y="332" text-anchor="middle">
+                pipeline desta execução
+              </text>
+              <text class="ts" x="210" y="352" text-anchor="middle">
+                contadores zerados
+              </text>
+              <text class="ts" x="210" y="370" text-anchor="middle">
+                keys.json byte-idêntico
+              </text>
+              <rect
+                class="n ok"
+                x="420"
+                y="300"
+                width="540"
+                height="104"
+                rx="12"
+              />
+              <text class="tt" x="690" y="328" text-anchor="middle">
+                6 ALIBIS INDEPENDENTES
+              </text>
+              <text class="ts" x="690" y="348" text-anchor="middle">
+                keys.json byte-idêntico · contadores 0 em todos os processos
+              </text>
+              <text class="ts" x="690" y="366" text-anchor="middle">
+                md5 do ratelimit.json estável (74639fbb) pós-incidente
+              </text>
+              <text class="ts" x="690" y="384" text-anchor="middle">
+                hold de cota até 31/08 = estado REAL, não restaurado
+              </text>
+              <path
+                class="edge"
+                d="M 380 352 L 416 352"
+                marker-end="url(#arr4)"
+              />
+              <text class="el imp" x="388" y="340">provam origem externa</text>
+            </svg>
+          </div>
+          <figcaption>
+            <span class="claim"
+              >As 7 buscas reais da 01:43 têm assinatura de uso externo: 6
+              alibis independentes — entre eles
+              <code>keys.json</code> byte-idêntico, contadores zerados, md5 do
+              <code>ratelimit.json</code> estável (74639fbb) e o hold de cota
+              mantido como estado real, não restaurado.</span
+            >
+            <span class="support"
+              >A evidência que importa: nenhuma busca poderia ter saído do
+              pipeline com contadores zerados e chave intocada — o incidente não
+              quebrou a regra da tarefa.</span
+            >
+          </figcaption>
+        </figure>
+      </section>
+
+      <!-- ================= SEGMENTO 05 ================= -->
+      <section class="seg" id="s5">
+        <h2>
+          <span class="num">05</span>O portão ficou mais barato do que era
+        </h2>
+        <p class="lede">
+          Corrigir 85 defeitos não custou lentidão: o caminho crítico da
+          verificação encolheu.
+        </p>
+        <p>
+          O custo medido do portão:
+          <strong>npm test foi de ~110s para ~24s</strong> e o smoke de
+          <strong>~90s para 6,5s</strong>. A causa registrada nos fatos: o
+          <dfn
+            class="bw"
+            title="Espera crescente entre tentativas repetidas após erro de limite — para não martelar a API"
+            >backoff</dfn
+          >
+          do OpenRouter passou a ser
+          <dfn class="bw" title="Teto de custo/tokens de uma chamada de LLM"
+            >capado pelo orçamento</dfn
+          >. Resultado prático:
+          <crit
+            >o gate com 31 regras fixadas valida mais rápido do que o gate com
+            24</crit
+          >
+          — mais cobertura, menos espera.
+        </p>
+
+        <figure class="fig-shell">
+          <div
+            class="frame"
+            role="img"
+            aria-label="Gráfico de barras comparando antes e depois do custo do portão: npm test de 110 segundos para 24 segundos (cerca de 4,6 vezes mais barato); smoke de 90 segundos para 6,5 segundos (cerca de 14 vezes mais barato). Causa registrada: backoff do OpenRouter capado pelo orçamento."
+          >
+            <p class="fhead">
+              <span class="fno">Figura 5</span> · custo do portão, antes ×
+              depois
+            </p>
+            <svg viewBox="0 0 1000 460" xmlns="http://www.w3.org/2000/svg">
+              <line
+                x1="200"
+                y1="40"
+                x2="200"
+                y2="330"
+                stroke="var(--edge-strong)"
+                stroke-width="1.6"
+              />
+              <line
+                x1="200"
+                y1="330"
+                x2="760"
+                y2="330"
+                stroke="var(--edge-strong)"
+                stroke-width="1.6"
+              />
+              <g
+                fill="var(--muted-foreground)"
+                font-family="var(--font-mono)"
+                font-size="10"
+              >
+                <text x="200" y="352" text-anchor="middle">0s</text>
+                <text x="305" y="352" text-anchor="middle">25s</text>
+                <text x="410" y="352" text-anchor="middle">50s</text>
+                <text x="515" y="352" text-anchor="middle">75s</text>
+                <text x="620" y="352" text-anchor="middle">100s</text>
+                <text x="725" y="352" text-anchor="middle">125s</text>
+              </g>
+              <g>
+                <rect
+                  x="200"
+                  y="66"
+                  width="462"
+                  height="34"
+                  rx="4"
+                  fill="var(--muted)"
+                  stroke="var(--border)"
+                />
+                <text
+                  class="ms"
+                  x="196"
+                  y="80"
+                  text-anchor="end"
+                  fill="var(--foreground)"
+                >
+                  npm test · antes
+                </text>
+                <text class="ms" x="668" y="88" fill="var(--foreground)">
+                  ~110s
+                </text>
+                <rect
+                  x="200"
+                  y="112"
+                  width="101"
+                  height="34"
+                  rx="4"
+                  fill="var(--primary)"
+                />
+                <text
+                  class="ms"
+                  x="196"
+                  y="126"
+                  text-anchor="end"
+                  fill="var(--foreground)"
+                >
+                  npm test · depois
+                </text>
+                <text
+                  class="ms"
+                  x="310"
+                  y="134"
+                  fill="var(--primary-foreground)"
+                >
+                  ~24s · ×4,6 mais barato
+                </text>
+                <rect
+                  x="200"
+                  y="226"
+                  width="378"
+                  height="34"
+                  rx="4"
+                  fill="var(--muted)"
+                  stroke="var(--border)"
+                />
+                <text
+                  class="ms"
+                  x="196"
+                  y="240"
+                  text-anchor="end"
+                  fill="var(--foreground)"
+                >
+                  smoke · antes
+                </text>
+                <text class="ms" x="584" y="248" fill="var(--foreground)">
+                  ~90s
+                </text>
+                <rect
+                  x="200"
+                  y="272"
+                  width="27"
+                  height="34"
+                  rx="4"
+                  fill="var(--primary)"
+                />
+                <text
+                  class="ms"
+                  x="196"
+                  y="286"
+                  text-anchor="end"
+                  fill="var(--foreground)"
+                >
+                  smoke · depois
+                </text>
+                <text
+                  class="ms"
+                  x="236"
+                  y="294"
+                  fill="var(--primary-foreground)"
+                >
+                  6,5s · ×14 mais barato
+                </text>
+              </g>
+              <rect
+                class="n dashed"
+                x="200"
+                y="382"
+                width="760"
+                height="56"
+                rx="10"
+              />
+              <text class="ts" x="580" y="404" text-anchor="middle">
+                causa registrada nos fatos: backoff do OpenRouter capado pelo
+                orçamento
+              </text>
+              <text class="ts" x="580" y="422" text-anchor="middle">
+                razões ×4,6 e ×14 são aritmética direta (110/24 e 90/6,5)
+              </text>
+            </svg>
+          </div>
+          <figcaption>
+            <span class="claim"
+              >O portão ficou mais barato do que era: npm test ~110s → ~24s
+              (×4,6) e smoke ~90s → 6,5s (×14) — o backoff do OpenRouter, capado
+              pelo orçamento, é a causa registrada.</span
+            >
+            <span class="support"
+              >Tempo não foi trocado por cobertura: o mesmo portão passou de 24
+              para 31 regras fixed no gate-state, com 0 bugs proven.</span
+            >
+          </figcaption>
+        </figure>
+      </section>
+
+      <!-- ================= SEGMENTO 06 ================= -->
+      <section class="seg" id="s6">
+        <h2>
+          <span class="num">06</span>Conversões de régua: desbloquear sem
+          afrouxar
+        </h2>
+        <p class="lede">
+          Alguns defeitos não eram do código — eram da régua que o media.
+          Calibrar a régua desbloqueou fixes sem perder asserção.
+        </p>
+        <p>
+          As suítes de regressão usam
+          <dfn
+            class="bw"
+            title="Regra de teste adversarial que proíbe um comportamento (ex.: 'não toque neste campo'); violação reprova"
+            >réguas</dfn
+          >
+          — testes que punem desvios. Quando uma régua proibia algo que o
+          <dfn
+            class="bw"
+            title="Comportamento prometido, independente de como foi implementado"
+            >contrato</dfn
+          >
+          não promete, o fix legítimo era classificado como violação e
+          bloqueado. A saída foi a classificação
+          <strong>&ldquo;NOT a contract&rdquo;</strong>: o comportamento medido
+          não faz parte do contrato, então
+          <crit
+            >recalibrar a régua — sem tocar na condição — não afrouxa promessa
+            nenhuma</crit
+          >.
+        </p>
+        <p>
+          Foram 3 conversões autorizadas (P1b em <code>:281</code>, C1 em
+          lib-install, D1b em <code>:376</code>) + o BUG-07 (convertido para
+          <em>medir o silêncio</em>, o que os fatos chamam de contrato) + 2
+          funções <code>eq()</code> novas — todas no modelo &ldquo;NOT a
+          contract&rdquo;, condição inalterada (decisão D-A5).
+        </p>
+
+        <figure class="fig-shell">
+          <div
+            class="frame"
+            role="img"
+            aria-label="Comparação antes e depois: antes, a régua proíbe um comportamento, classifica o defeito legítimo como violação e bloqueia o fix. Depois, a régua recalibrada no modelo NOT a contract, com condição inalterada, classifica o comportamento como fora do contrato, desbloqueia o fix e segue medindo. Linha inferior: conversões P1b, C1, D1b, BUG-07 e 2 eq novas, condição inalterada."
+          >
+            <p class="fhead">
+              <span class="fno">Figura 6</span> · recalibrar a régua, manter a
+              condição
+            </p>
+            <svg viewBox="0 0 1000 520" xmlns="http://www.w3.org/2000/svg">
+              <defs>
+                <marker
+                  id="arr6"
+                  viewBox="0 0 10 10"
+                  refX="9"
+                  refY="5"
+                  markerWidth="7"
+                  markerHeight="7"
+                  orient="auto-start-reverse"
+                >
+                  <path d="M0 0 L10 5 L0 10 z" fill="var(--edge-strong)" />
+                </marker>
+              </defs>
+              <text
+                class="ms"
+                x="250"
+                y="40"
+                text-anchor="middle"
+                fill="var(--muted-foreground)"
+              >
+                ANTES · régua dura
+              </text>
+              <rect class="n" x="60" y="58" width="380" height="70" rx="12" />
+              <text class="tt" x="250" y="86" text-anchor="middle">
+                régua proíbe o comportamento
+              </text>
+              <text class="ts" x="250" y="106" text-anchor="middle">
+                sem distinguir contrato × implementação
+              </text>
+              <rect
+                class="n bad"
+                x="60"
+                y="188"
+                width="380"
+                height="70"
+                rx="12"
+              />
+              <text class="tt" x="250" y="216" text-anchor="middle">
+                defeito legítimo → &ldquo;violação da régua&rdquo;
+              </text>
+              <text class="ts" x="250" y="236" text-anchor="middle">
+                classificação errada
+              </text>
+              <rect
+                class="n bad strong"
+                x="60"
+                y="318"
+                width="380"
+                height="70"
+                rx="12"
+              />
+              <text class="tt" x="250" y="346" text-anchor="middle">
+                fix bloqueado
+              </text>
+              <text class="ts" x="250" y="366" text-anchor="middle">
+                asserção indevidamente mantida
+              </text>
+              <path
+                class="edge"
+                d="M 250 128 L 250 184"
+                marker-end="url(#arr6)"
+              />
+              <text class="el" x="262" y="160">classifica como violação</text>
+              <path
+                class="edge"
+                d="M 250 258 L 250 314"
+                marker-end="url(#arr6)"
+              />
+              <text class="el" x="262" y="290">rejeita o fix</text>
+              <text
+                class="ms"
+                x="750"
+                y="40"
+                text-anchor="middle"
+                fill="var(--muted-foreground)"
+              >
+                DEPOIS · régua recalibrada (&ldquo;NOT a contract&rdquo;)
+              </text>
+              <rect
+                class="n ok"
+                x="560"
+                y="58"
+                width="380"
+                height="70"
+                rx="12"
+              />
+              <text class="tt" x="750" y="86" text-anchor="middle">
+                modelo &ldquo;NOT a contract&rdquo;
+              </text>
+              <text class="ts" x="750" y="106" text-anchor="middle">
+                comportamento medido fora do contrato
+              </text>
+              <rect class="n" x="560" y="188" width="380" height="70" rx="12" />
+              <text class="tt" x="750" y="216" text-anchor="middle">
+                condição inalterada
+              </text>
+              <text class="ts" x="750" y="236" text-anchor="middle">
+                mesma medição de sempre
+              </text>
+              <rect
+                class="n ok strong"
+                x="560"
+                y="318"
+                width="380"
+                height="70"
+                rx="12"
+              />
+              <text class="tt" x="750" y="346" text-anchor="middle">
+                defeito vira fix · régua segue
+              </text>
+              <text class="ts" x="750" y="366" text-anchor="middle">
+                medindo o contrato, sem afrouxar
+              </text>
+              <path
+                class="edge"
+                d="M 750 128 L 750 184"
+                marker-end="url(#arr6)"
+              />
+              <text class="el" x="762" y="160">
+                comportamento não é contrato
+              </text>
+              <path
+                class="edge"
+                d="M 750 258 L 750 314"
+                marker-end="url(#arr6)"
+              />
+              <text class="el imp" x="762" y="290">desbloqueia o fix</text>
+              <rect
+                class="n dashed"
+                x="60"
+                y="430"
+                width="880"
+                height="58"
+                rx="10"
+              />
+              <text class="ts" x="500" y="454" text-anchor="middle">
+                conversões: P1b (:281) · C1 (lib-install) · D1b (:376) · BUG-07
+                (agora mede o silêncio)
+              </text>
+              <text class="ts" x="500" y="472" text-anchor="middle">
+                + 2 eq() novas · todas com condição inalterada (D-A5)
+              </text>
+            </svg>
+          </div>
+          <figcaption>
+            <span class="claim"
+              >Três conversões de régua no modelo &ldquo;NOT a contract&rdquo;,
+              com a condição inalterada, transformaram bloqueios falsos em fixes
+              — e o BUG-07 virou uma régua que mede o silêncio.</span
+            >
+            <span class="support"
+              >A promessa que não muda: a condição que dispara a régua continua
+              a mesma; muda apenas a classificação do que ela está
+              medindo.</span
+            >
+          </figcaption>
+        </figure>
+      </section>
+
+      <!-- ================= SEGMENTO 07 ================= -->
+      <section class="seg" id="s7">
+        <h2>
+          <span class="num">07</span>Verificação: três validações independentes
+        </h2>
+        <p class="lede">
+          GATE GREEN não foi dito uma vez só — foi provado três vezes, por
+          caminhos independentes, mais a revisão adversarial de cada frente.
+        </p>
+        <p>
+          A linha de base era <code>main@13de39c</code>:
+          <strong>1083 asserções em 7 suítes</strong>, portão verde. Uma
+          <dfn
+            class="bw"
+            title="Afirmação verificável dentro de um teste; falhou = teste vermelho"
+            >asserção</dfn
+          >
+          é a unidade de verdade de um teste: cada uma é uma afirmação que o
+          código precisa sustentar. Depois da integração da Onda 1 e da Onda 2,
+          as validações independentes marcaram
+          <crit>1097 asserções / 0 falhas</crit> em cada uma. O gate final soma
+          as 3 suítes de regressão novas (núcleo 69, superfície 129, busca 115 —
+          esta última registrada nos fatos como &ldquo;a integrar&rdquo;),
+          totalizando <strong>~1410 asserções previstas</strong>.
+        </p>
+
+        <div class="tbl-wrap">
+          <table>
+            <caption class="note" style="text-align: left; margin-bottom: 8px">
+              Validações e régua de portão (fatos)
+            </caption>
+            <thead>
+              <tr>
+                <th>Validação</th>
+                <th>Resultado</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>Onda 1 integrada</td>
+                <td>
+                  <span class="pill ok">GATE GREEN</span> 1097 asserções / 0
+                  falhas
+                </td>
+              </tr>
+              <tr>
+                <td>Onda 2 integrada</td>
+                <td>
+                  <span class="pill ok">GATE GREEN</span> 1097 asserções / 0
+                  falhas
+                </td>
+              </tr>
+              <tr>
+                <td>Gate final previsto</td>
+                <td>
+                  <span class="pill pri">GREEN</span> 3 suítes novas: núcleo 69
+                  + superfície 129 + busca 115 → ~1410 asserções totais
+                  previstas
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="tbl-wrap">
+          <table>
+            <caption class="note" style="text-align: left; margin-bottom: 8px">
+              Estado das réguas de portão ao fim da Onda 7
+            </caption>
+            <thead>
+              <tr>
+                <th>Régua</th>
+                <th>Estado</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code>gate-state</code></td>
+                <td>
+                  <strong>24 → 31 fixed</strong> ·
+                  <span class="pill ok">0 bugs proven</span> — todos os defeitos
+                  conhecidos do portão consertados
+                </td>
+              </tr>
+              <tr>
+                <td><code>lib-install</code></td>
+                <td>38 fixed / 6 reproduced</td>
+              </tr>
+              <tr>
+                <td><code>brave-limits</code></td>
+                <td>
+                  137 → 139 (+2 contrato) · BUG-07 convertido (mede o silêncio)
+                </td>
+              </tr>
+              <tr>
+                <td><code>loop-frontier</code></td>
+                <td>115 · BUG-09 flipou (janela FIFO 200 + contador total)</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="tbl-wrap">
+          <table>
+            <caption class="note" style="text-align: left; margin-bottom: 8px">
+              Revisão adversarial da integração
+            </caption>
+            <thead>
+              <tr>
+                <th>Alvo</th>
+                <th>Veredito</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>15 frentes (F1–F15)</td>
+                <td>
+                  15/15 revisadas · <span class="pill ok">14 APPROVE</span> ·
+                  <span class="pill warn">F4 WARNING</span> → fix integrado ·
+                  <span class="pill warn">F6 WARNING</span> sem material
+                </td>
+              </tr>
+              <tr>
+                <td>Diff integrado</td>
+                <td>
+                  <span class="pill warn">WARNING</span> → fix-docs integrado
+                </td>
+              </tr>
+              <tr>
+                <td>Revisores de teste</td>
+                <td>
+                  2 <span class="pill warn">WARNING</span> → fixes de suíte
+                  integrados/pendentes
+                </td>
+              </tr>
+              <tr>
+                <td>Rede</td>
+                <td>
+                  <span class="pill ok">zero</span> provada por preload —
+                  contadores 63–190 por processo, todos 0 por gate (D-A1: zero
+                  surf, zero curl)
+                </td>
+              </tr>
+              <tr>
+                <td>Artefatos reais</td>
+                <td>
+                  md5 estáveis — <code>keys</code> 58532c4b ·
+                  <code>ratelimit</code> 74639fbb (pós-incidente)
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- ================= SEGMENTO 08 ================= -->
+      <section class="seg" id="s8">
+        <h2>
+          <span class="num">08</span>Resultado: números, madrugada e o que ficou
+          de fora
+        </h2>
+        <p class="lede">
+          O que entrou, em quanto tempo, e — tão importante quanto — o que não
+          entrou e por quê.
+        </p>
+        <p>
+          Tudo o que era liquidável foi liquidado. O que ficou de fora
+          <crit>não ficou por esquecimento: ficou com evidência</crit> —
+          defeitos classificados como impossíveis, deliberados ou dependentes de
+          decisão externa, todos registrados no relatório da execução.
+        </p>
+
+        <div class="tbl-wrap">
+          <table>
+            <caption class="note" style="text-align: left; margin-bottom: 8px">
+              Não-fechados com evidência (fatos — todos registrados no
+              relatório)
+            </caption>
+            <thead>
+              <tr>
+                <th>Defeito</th>
+                <th>Veredito</th>
+                <th>Evidência registrada</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code>BUG-23</code></td>
+                <td>deliberado</td>
+                <td>régua: contrato + tautologia + §2.2</td>
+              </tr>
+              <tr>
+                <td><code>H10-bug</code></td>
+                <td>impossível</td>
+                <td>sonda de SO</td>
+              </tr>
+              <tr>
+                <td><code>#18</code></td>
+                <td>deliberado</td>
+                <td>predicado na camada errada</td>
+              </tr>
+              <tr>
+                <td>atributo HTML</td>
+                <td>impossível</td>
+                <td>parser</td>
+              </tr>
+              <tr>
+                <td><code>D1-F8</code> com portão</td>
+                <td>deliberado</td>
+                <td>ok + bug na mesma condição</td>
+              </tr>
+              <tr>
+                <td><code>H6</code></td>
+                <td>deliberado</td>
+                <td>redesign proibido</td>
+              </tr>
+              <tr>
+                <td><code>BUG-07-08</code></td>
+                <td>deliberado</td>
+                <td>D6</td>
+              </tr>
+              <tr>
+                <td><code>BUG-33</code></td>
+                <td>deliberado</td>
+                <td>pinado :931/:932</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3>A madrugada em linha do tempo</h3>
+        <ul class="tl">
+          <li>
+            <span class="t">01:35</span>
+            <span class="d"
+              >FASE 0 — baseline <code>main@13de39c</code>, snapshot e portão
+              inicial.</span
+            >
+          </li>
+          <li>
+            <span class="t">01:41</span>
+            <span class="d"
+              >Disparo das 15 frentes em worktrees disjuntas.</span
+            >
+          </li>
+          <li>
+            <span class="t">01:43</span>
+            <span class="d"
+              >Incidente externo de ratelimit — 7 buscas reais numa chave
+              50rps/ZERO-cota; 6 alibis independentes exoneram o pipeline.</span
+            >
+          </li>
+          <li>
+            <span class="t">02:00–02:12</span>
+            <span class="d"
+              >Todas as frentes completas; revisores v1 mortos por modelo não
+              suportado (400 <code>model_not_supported</code>, modelo haiku) —
+              re-dispatch com o padrão.</span
+            >
+          </li>
+          <li>
+            <span class="t">02:2x</span>
+            <span class="d"
+              >Re-dispatch dos revisores v2 + REPLAN v2 — acha o BUG-09
+              (executado: janela FIFO 200).</span
+            >
+          </li>
+          <li>
+            <span class="t">03:0x</span>
+            <span class="d"
+              >Merges 15/15 com gates + subwaves de teste/validação.</span
+            >
+          </li>
+          <li>
+            <span class="t">03:5x</span>
+            <span class="d"
+              >Reviews 15/15 + validações + fixes coordenados (ledger / docs /
+              suítes).</span
+            >
+          </li>
+          <li>
+            <span class="t">fim</span>
+            <span class="d"
+              >Convergência (REPLAN v3 sem trabalho novo) → COMMIT-FINAL.</span
+            >
+          </li>
+        </ul>
+
+        <div class="callout ok">
+          <strong>Recorte final:</strong> 18 squash commits · 3 validações GATE
+          GREEN independentes · gate-state 31 fixed / 0 bugs proven · ~1410
+          asserções previstas · portão npm test ~24s (era ~110s) · smoke 6,5s
+          (era ~90s) · zero rede provada · 8 não-fechados com evidência.
+        </div>
+      </section>
+
+      <!-- ================= DOBRAS (LEITOR EXPERIENTE PULA) ================= -->
+      <details class="fold" id="exp">
+        <summary>
+          Para o leitor experiente — a camada completa (commits, decisões,
+          incidentes, glossário)
+        </summary>
+        <div class="fold-body">
+          <h3>Os 18 squash commits (tópicos verbatim do arquivo de fatos)</h3>
+          <div class="commit-list">
+            <span class="h">Onda 7 (15):</span> 591bb20 preflight
+            (PRESENT_UNPROVEN) · 4b1932e state (TTL unilateral; P1/S2/S5) ·
+            9da0951 dispatch (quota skip; D1) · 47df1e6 env (burn;
+            M1/M2/D2/D3/P5) · 88799f0 api/search (G4 rejeita 78; C1-C3; E1/E2;
+            B1) · 7e25a1a ratelimit+cache (7 bugs) · 5e6e348 brave-limits
+            (BUG-07 contrato) · 1d902d6 orchestrator/frontier/heuristics (#31
+            sete flags; BUG-34; 10/11; 24; phantom) · b9681f1 openrouter
+            (backoff 84s→24s; smoke 6,5s) · 3547caa html (surrogate; CR; U+00AD;
+            U+FFF9-FFFB; noncharacters) · 6d1008d ledger (urls sem host; digest
+            blindado; BUG-13/15/19) · 01cb491 install (H3/H4/H11/H12;
+            harnessDirs) · d375a70 CLI (12 defeitos; mask única) · 69986b6
+            README/surf (3 skills derivadas; versão única) · c144dbd SKILL.md
+            (R4 por fluxo; teto 20%; B-08; convenções).<br />
+            <span class="h">Onda 2 (1):</span> 97d7d96 BUG-09 (janela FIFO 200 +
+            contador total).<br />
+            <span class="h">Fixes coordenados (3):</span> d25d27d
+            fix-final-ledger (canonicalUrl raiz idempotente — errata de revisor)
+            · 14a146b fix-final-docs (errata R4/barreira; comentário) · (D1 e
+            G4/C1 entraram nos merges das próprias frentes).<br />
+            <span class="h"
+              >Testes de regressão (arquivos novos em
+              <code>test/adversarial/</code>):</span
+            >
+            2974706 nucleo (69) · d271a03 superficie (129) · (busca 115 — a
+            integrar).
+          </div>
+          <p class="note">
+            Os fatos registram &ldquo;18 squash commits&rdquo; como total da
+            entrega; a composição acima reproduz as listas do relatório com seus
+            rótulos originais.
+          </p>
+
+          <h3>Decisões autônomas registradas (D-A1 … D-A6)</h3>
+          <ul class="clean">
+            <li>
+              <strong>D-A1</strong> — pesquisa web PROIBIDA (regra R1 da tarefa:
+              cota ~117 buscas/mês). Zero surf, zero curl; prova por
+              instrumentação em todos os processos (contadores 63–190, todos 0
+              por gate).
+            </li>
+            <li>
+              <strong>D-A2</strong> — scratchpad
+              <code>/tmp/surf-audit-20260830/&lt;frente&gt;/</code>.
+            </li>
+            <li>
+              <strong>D-A3</strong> — <code>HOME=$(mktemp -d)</code> em todo
+              teste (armadilha H10: constantes congelam no import).
+            </li>
+            <li>
+              <strong>D-A4</strong> — worktrees da execução anterior (20260829,
+              15, locked) NÃO tocadas (terceiros).
+            </li>
+            <li>
+              <strong>D-A5</strong> — 3 conversões de régua autorizadas (P1b
+              :281, C1 lib-install, D1b :376) + BUG-07 (silêncio) + 2
+              <code>eq()</code> novas — todas no modelo &ldquo;NOT a
+              contract&rdquo;, condição inalterada.
+            </li>
+            <li>
+              <strong>D-A6</strong> — incidente
+              <code>~/.cache/surf/ratelimit.json</code> 01:43:19 (7 buscas reais
+              na chave 50rps/ZERO-cota; <code>keys.json</code> byte-idêntico; 6
+              alibis independentes). Hold de cota até 31/08 é estado REAL — não
+              restaurado.
+            </li>
+          </ul>
+
+          <h3>Incidentes da sessão (barreira + análise)</h3>
+          <ul class="clean">
+            <li>
+              <strong>Revisores v1 mortos:</strong> 15 revisores v1 mortos por
+              400 <code>model_not_supported</code> (modelo haiku não suportado
+              no provedor) — re-dispatch com o padrão.
+            </li>
+            <li>
+              <strong>Autofix do biome:</strong> o corretor automático de estilo
+              do harness reformatou arquivos no BASE 3× — guarda pré-merge
+              restaurada.
+            </li>
+            <li>
+              <strong>Gates mortos:</strong> 2× por timeout do bash pai sob load
+              50–60 (processos de vitest/vite de outro projeto do usuário).
+            </li>
+            <li>
+              <strong>Asserção de timing flaky:</strong>
+              <code>first &lt; 500ms</code> falhou sob load alto — ambiental,
+              comprovada (a mesma suíte passou 3× com load baixo).
+            </li>
+          </ul>
+
+          <h3>
+            Glossário fechado (toda buzzword do documento, definida uma vez)
+          </h3>
+          <div class="tbl-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Termo</th>
+                  <th>Definição</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>auditoria adversarial</td>
+                  <td>
+                    Revisão feita por agentes com instrução explícita de achar
+                    defeitos, não de aprovar.
+                  </td>
+                </tr>
+                <tr>
+                  <td>débito técnico</td>
+                  <td>
+                    Trabalho de qualidade adiado que volta mais caro depois.
+                  </td>
+                </tr>
+                <tr>
+                  <td>deep-orchestrator</td>
+                  <td>
+                    Invólucro que divide a tarefa em ondas de agentes paralelos
+                    em worktrees, revisa e integra com portão.
+                  </td>
+                </tr>
+                <tr>
+                  <td>worktree</td>
+                  <td>
+                    Cópia de trabalho isolada do mesmo repositório (git
+                    worktree), com branch própria, que não conflita com as
+                    outras.
+                  </td>
+                </tr>
+                <tr>
+                  <td>barreira</td>
+                  <td>
+                    Espera coletiva: a onda seguinte só dispara quando todos os
+                    agentes da anterior terminaram.
+                  </td>
+                </tr>
+                <tr>
+                  <td>subwave</td>
+                  <td>
+                    Onda de teste/validação que roda junto da onda seguinte, não
+                    depois dela.
+                  </td>
+                </tr>
+                <tr>
+                  <td>squash-merge</td>
+                  <td>
+                    Integrar uma pilha de commits como um commit único, com
+                    histórico limpo.
+                  </td>
+                </tr>
+                <tr>
+                  <td>gate (portão)</td>
+                  <td>
+                    Cheque obrigatório (build + testes + lint) que bloqueia a
+                    integração se falhar.
+                  </td>
+                </tr>
+                <tr>
+                  <td>GATE GREEN</td>
+                  <td>Estado em que o portão passa sem nenhuma falha.</td>
+                </tr>
+                <tr>
+                  <td>REPLAN / convergência</td>
+                  <td>
+                    Replanejamento do orquestrador quando uma onda revela
+                    trabalho novo; convergência é o estado em que
+                    replanejamentos não acham mais nada.
+                  </td>
+                </tr>
+                <tr>
+                  <td>invariante</td>
+                  <td>Propriedade que deve valer em toda execução.</td>
+                </tr>
+                <tr>
+                  <td>exit 78</td>
+                  <td>
+                    Código de saída padrão &ldquo;configuration error&rdquo;;
+                    aqui, a parada obrigatória quando não há chave válida.
+                  </td>
+                </tr>
+                <tr>
+                  <td>fan-out</td>
+                  <td>
+                    Ponto que espalha o trabalho para muitas filhas; aqui, o
+                    disparo de buscas para os provedores.
+                  </td>
+                </tr>
+                <tr>
+                  <td>preload / instrumentação</td>
+                  <td>
+                    Módulo injetado antes de o programa rodar que intercepta e
+                    conta tentativas de rede; a contagem é a instrumentação.
+                  </td>
+                </tr>
+                <tr>
+                  <td>alibi</td>
+                  <td>
+                    Evidência independente mostrando que um evento não
+                    aconteceu.
+                  </td>
+                </tr>
+                <tr>
+                  <td>byte-idêntico</td>
+                  <td>
+                    O arquivo não mudou um byte sequer — comparado por hash.
+                  </td>
+                </tr>
+                <tr>
+                  <td>md5</td>
+                  <td>
+                    Hash que resume um arquivo; md5 igual na prática significa
+                    conteúdo igual.
+                  </td>
+                </tr>
+                <tr>
+                  <td>backoff</td>
+                  <td>
+                    Espera crescente entre tentativas repetidas após erro de
+                    limite — para não martelar a API.
+                  </td>
+                </tr>
+                <tr>
+                  <td>orçamento (de chamada)</td>
+                  <td>Teto de custo/tokens de uma chamada de LLM.</td>
+                </tr>
+                <tr>
+                  <td>régua</td>
+                  <td>
+                    Regra de teste adversarial que proíbe um comportamento;
+                    violação reprova.
+                  </td>
+                </tr>
+                <tr>
+                  <td>contrato de teste</td>
+                  <td>
+                    Comportamento prometido, independente de como foi
+                    implementado.
+                  </td>
+                </tr>
+                <tr>
+                  <td>&ldquo;NOT a contract&rdquo;</td>
+                  <td>
+                    Classificação da régua: o comportamento medido não faz parte
+                    do contrato — recalibrar não afrouxa promessa.
+                  </td>
+                </tr>
+                <tr>
+                  <td>asserção</td>
+                  <td>
+                    Afirmação verificável dentro de um teste; falhou = teste
+                    vermelho.
+                  </td>
+                </tr>
+                <tr>
+                  <td>flaky</td>
+                  <td>Teste que ora passa, ora falha sem mudança de código.</td>
+                </tr>
+                <tr>
+                  <td>phantom</td>
+                  <td>
+                    Flag que parecia existir mas não existia (defeito fantasma).
+                  </td>
+                </tr>
+                <tr>
+                  <td>surrogate · CR · U+00AD · U+FFF9–FFFB · noncharacters</td>
+                  <td>
+                    Unidade de código UTF-16 isolada · carriage return · hífen
+                    macio · marcas de anotação interlinear · não-caracteres
+                    Unicode — classes de caracteres problemáticos tratadas na
+                    frente html.
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <h3>Verificação técnica (detalhe)</h3>
+          <ul class="clean">
+            <li>
+              3 validações GATE GREEN (onda 1 integrada, onda 2 integrada, gate
+              final — este a confirmar com as 3 suítes de regressão novas).
+            </li>
+            <li>
+              Zero rede provada por preload — contadores em todos os processos,
+              faixa 63–190, todos 0 por gate.
+            </li>
+            <li>
+              md5 dos arquivos reais estáveis: <code>keys</code> 58532c4b ·
+              <code>ratelimit</code> 74639fbb (pós-incidente).
+            </li>
+            <li>
+              REPLAN v1 interrompido → v2 achou BUG-09 (executado) → v3
+              convergência.
+            </li>
+          </ul>
+        </div>
+      </details>
+
+      <!-- ================= FOOTER ================= -->
+      <footer>
+        <p>
+          <strong>Fonte única de fatos:</strong>
+          <code
+            >.deep-orchestrator/run-20260830-013539-1402175/explainer/fatos.md</code
+          >
+          — nada nesta página foi inventado; números derivados (201−116; ×4,6;
+          ×14; ~1410) são aritmética direta sobre valores desse arquivo e estão
+          marcados como tal.
+        </p>
+        <p>
+          <strong>Validade:</strong> execução de 2026-08-30, baseline
+          <code>main@13de39c</code>. Fatos que envelhecem: estado das réguas
+          (gate-state 31 fixed, lib-install 38/6, brave-limits 139,
+          loop-frontier 115) e a suíte de busca registrada como &ldquo;a
+          integrar&rdquo;.
+        </p>
+        <p>
+          Gerado como explicador didático da Onda 7 · público: desenvolvedor que
+          conhece o surf-agent-skill por cima · leitor experiente: use a dobra
+          acima.
+        </p>
+      </footer>
     </div>
-    <figcaption>
-      <span class="claim">Uma auditoria adversarial de 6 ondas achou 201 defeitos e corrigiu 116; a Onda 7 liquidou o saldo restante (85, por 201 − 116) registrado em <code>docs/debito-tecnico.md</code> e entregou <code>main</code> em GATE GREEN.</span>
-      <span class="support">Caminho crítico: o nó amarelo (saldo registrado) é o alvo da execução — o nó roxo (Onda 7) é a única rota que o liquida.</span>
-    </figcaption>
-  </figure>
-</section>
-
-<!-- ================= SEGMENTO 02 ================= -->
-<section class="seg" id="s2">
-  <h2><span class="num">02</span>A máquina: 15 frentes em worktrees disjuntas</h2>
-  <p class="lede">Paralelizar 15 frentes de correção sem que uma pise na outra — e sem deixar nada entrar sem conferência.</p>
-  <p>Cada frente F1–F15 ganhou uma <dfn class="bw" title="Cópia de trabalho isolada do mesmo repositório (git worktree), com branch própria, que não conflita com as outras">worktree</dfn> própria, criada a partir de <code>main@13de39c</code>. Worktrees disjuntas significam que os 15 agentes editam árvores de arquivos separadas: não há conflito de edição entre frentes, e o orquestrador sabe exatamente o que cada uma mudou. Uma <dfn class="bw" title="Espera coletiva: a onda seguinte só dispara quando todos os agentes da onda anterior terminaram">barreira</dfn> garante que a Onda 2 e as sub-tarefas só rodem depois que a Onda 7 convergiu; sub-tarefas de <dfn class="bw" title="Onda de teste/validação que roda junto da onda seguinte, não depois dela">subwave</dfn> acompanham a integração.</p>
-  <p>Cada entrega entra por <dfn class="bw" title="Integrar uma pilha de commits como um commit único, com histórico limpo">squash-merge</dfn> — um commit por frente — e <crit>só depois de passar o portão</crit> (<dfn class="bw" title="Cheque obrigatório (build + testes + lint) que bloqueia a integração se falhar">gate</dfn>) sobre uma foto do estado integrado. Quando o planejamento revelava trabalho novo, o orquestrador <dfn class="bw" title="Replanejamento do orquestrador quando uma onda revela trabalho novo">replanejava</dfn>: o REPLAN v1 foi interrompido, o v2 achou o BUG-09 (executado), e o v3 chegou à <dfn class="bw" title="Estado em que replanejamentos sucessivos não encontram mais trabalho novo">convergência</dfn>.</p>
-
-  <figure class="fig-shell">
-    <div class="frame" role="img" aria-label="Diagrama: main cria 15 worktrees disjuntas F1 a F15; cada frente faz squash-merge de um commit que passa pelo portão build+test+lint antes de entrar; subwaves de teste e validação rodam junto da onda seguinte; o REPLAN v2 achou o BUG-09.">
-      <p class="fhead"><span class="fno">Figura 2</span> · paralelismo com portão</p>
-      <svg viewBox="0 0 1000 600" xmlns="http://www.w3.org/2000/svg">
-        <defs>
-          <marker id="arr2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="var(--edge-strong)"/></marker>
-          <marker id="arr2d" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="var(--edge)"/></marker>
-        </defs>
-        <rect class="n t" x="20" y="250" width="150" height="88" rx="12"/>
-        <text class="tt" x="95" y="286" text-anchor="middle">main</text>
-        <text class="ms" x="95" y="306" text-anchor="middle" fill="var(--muted-foreground)">13de39c</text>
-        <g>
-          <rect class="n" x="262" y="120" width="118" height="52" rx="9"/><text class="ms" x="321" y="142" text-anchor="middle" fill="var(--foreground)">F1</text><text class="ms" x="321" y="158" text-anchor="middle" fill="var(--muted-foreground)">preflight</text>
-          <rect class="n" x="392" y="120" width="118" height="52" rx="9"/><text class="ms" x="451" y="142" text-anchor="middle" fill="var(--foreground)">F2</text><text class="ms" x="451" y="158" text-anchor="middle" fill="var(--muted-foreground)">state</text>
-          <rect class="n" x="522" y="120" width="118" height="52" rx="9"/><text class="ms" x="581" y="142" text-anchor="middle" fill="var(--foreground)">F3</text><text class="ms" x="581" y="158" text-anchor="middle" fill="var(--muted-foreground)">dispatch</text>
-          <rect class="n" x="652" y="120" width="118" height="52" rx="9"/><text class="ms" x="711" y="142" text-anchor="middle" fill="var(--foreground)">F4</text><text class="ms" x="711" y="158" text-anchor="middle" fill="var(--muted-foreground)">env</text>
-          <rect class="n" x="782" y="120" width="118" height="52" rx="9"/><text class="ms" x="841" y="142" text-anchor="middle" fill="var(--foreground)">F5</text><text class="ms" x="841" y="158" text-anchor="middle" fill="var(--muted-foreground)">api/search</text>
-          <rect class="n" x="262" y="184" width="118" height="52" rx="9"/><text class="ms" x="321" y="206" text-anchor="middle" fill="var(--foreground)">F6</text><text class="ms" x="321" y="222" text-anchor="middle" fill="var(--muted-foreground)">ratelimit+cache</text>
-          <rect class="n" x="392" y="184" width="118" height="52" rx="9"/><text class="ms" x="451" y="206" text-anchor="middle" fill="var(--foreground)">F7</text><text class="ms" x="451" y="222" text-anchor="middle" fill="var(--muted-foreground)">brave-limits</text>
-          <rect class="n" x="522" y="184" width="118" height="52" rx="9"/><text class="ms" x="581" y="206" text-anchor="middle" fill="var(--foreground)">F8</text><text class="ms" x="581" y="222" text-anchor="middle" fill="var(--muted-foreground)">orchestrator</text>
-          <rect class="n" x="652" y="184" width="118" height="52" rx="9"/><text class="ms" x="711" y="206" text-anchor="middle" fill="var(--foreground)">F9</text><text class="ms" x="711" y="222" text-anchor="middle" fill="var(--muted-foreground)">openrouter</text>
-          <rect class="n" x="782" y="184" width="118" height="52" rx="9"/><text class="ms" x="841" y="206" text-anchor="middle" fill="var(--foreground)">F10</text><text class="ms" x="841" y="222" text-anchor="middle" fill="var(--muted-foreground)">html</text>
-          <rect class="n" x="262" y="248" width="118" height="52" rx="9"/><text class="ms" x="321" y="270" text-anchor="middle" fill="var(--foreground)">F11</text><text class="ms" x="321" y="286" text-anchor="middle" fill="var(--muted-foreground)">ledger</text>
-          <rect class="n" x="392" y="248" width="118" height="52" rx="9"/><text class="ms" x="451" y="270" text-anchor="middle" fill="var(--foreground)">F12</text><text class="ms" x="451" y="286" text-anchor="middle" fill="var(--muted-foreground)">install</text>
-          <rect class="n" x="522" y="248" width="118" height="52" rx="9"/><text class="ms" x="581" y="270" text-anchor="middle" fill="var(--foreground)">F13</text><text class="ms" x="581" y="286" text-anchor="middle" fill="var(--muted-foreground)">CLI</text>
-          <rect class="n" x="652" y="248" width="118" height="52" rx="9"/><text class="ms" x="711" y="270" text-anchor="middle" fill="var(--foreground)">F14</text><text class="ms" x="711" y="286" text-anchor="middle" fill="var(--muted-foreground)">README/surf</text>
-          <rect class="n" x="782" y="248" width="118" height="52" rx="9"/><text class="ms" x="841" y="270" text-anchor="middle" fill="var(--foreground)">F15</text><text class="ms" x="841" y="286" text-anchor="middle" fill="var(--muted-foreground)">SKILL.md</text>
-        </g>
-        <path class="edge" d="M 170 294 C 210 260 230 200 258 190" marker-end="url(#arr2)"/>
-        <text class="el" x="150" y="352">worktree disjunta por frente</text>
-        <text class="el" x="150" y="368">(git worktree · sem conflito)</text>
-        <rect class="n strong" x="262" y="396" width="340" height="76" rx="12"/>
-        <text class="tt" x="432" y="428" text-anchor="middle">PORTÃO (GATE)</text>
-        <text class="ts" x="432" y="450" text-anchor="middle">build + test + lint · snapshot integrado</text>
-        <path class="edge" d="M 432 300 C 432 340 432 356 432 392" marker-end="url(#arr2)"/>
-        <text class="el imp" x="446" y="350">squash-merge 1 a 1 com gate</text>
-        <rect class="n ok" x="640" y="396" width="260" height="76" rx="12"/>
-        <text class="tt" x="770" y="428" text-anchor="middle">main · integrado</text>
-        <text class="ts" x="770" y="450" text-anchor="middle">GATE GREEN · 3 validações</text>
-        <path class="edge" d="M 602 434 L 636 434" marker-end="url(#arr2)"/>
-        <text class="el" x="606" y="422">verde entra · vermelho volta</text>
-        <rect class="n dashed" x="640" y="120" width="320" height="104" rx="12"/>
-        <text class="tt" x="800" y="148" text-anchor="middle">SUBWAVE + REPLAN</text>
-        <text class="ts" x="800" y="168" text-anchor="middle">testes/validação da onda anterior rodam</text>
-        <text class="ts" x="800" y="184" text-anchor="middle">junto da onda seguinte</text>
-        <text class="ts" x="800" y="204" text-anchor="middle">REPLAN v1 → v2 (BUG-09) → v3 convergência</text>
-        <path class="edge dashed deem" d="M 782 172 C 762 172 760 170 752 170" marker-end="url(#arr2d)"/>
-        <text class="el" x="800" y="106">teste/validação</text>
-        <text class="el" x="800" y="120">acompanha a integração</text>
-      </svg>
-    </div>
-    <figcaption>
-      <span class="claim">15 worktrees disjuntas (F1–F15) rodam frentes em paralelo sem conflito; cada integração é um <crit>squash-merge que só entra após o portão verde</crit> sobre o snapshot integrado.</span>
-      <span class="support">O portão é o funil único de entrada: nada chega a <code>main</code> sem build + teste + lint verdes. Subwaves de teste/validação e o ciclo de replanejamento (que achou o BUG-09) fecham o laço.</span>
-    </figcaption>
-  </figure>
-</section>
-
-<!-- ================= SEGMENTO 03 ================= -->
-<section class="seg" id="s3">
-  <h2><span class="num">03</span>O invariante: sem chave, o pipeline para com exit 78</h2>
-  <p class="lede">A regra da tarefa proibia pesquisa web. O orquestrador transformou a proibição num invariante de código — e instrumentou a prova.</p>
-  <p>Um <dfn class="bw" title="Propriedade que deve valer em toda execução">invariante</dfn> da execução: <strong>sem chave Brave válida, o fan-out de busca para com <code>exit 78</code></strong> — o código de saída padrão &ldquo;configuration error&rdquo;, aqui a parada obrigatória (defeito G4, já fechado na frente F5). <dfn class="bw" title="Ponto que espalha o trabalho para muitas filhas; aqui, o disparo de buscas para os provedores">Fan-out</dfn> é o ponto em que uma chamada se multiplica — e é exatamente onde o vazamento de rede aconteceria se a regra fosse só &ldquo;boa intenção&rdquo;.</p>
-  <p>A prova de cumprimento foi por <dfn class="bw" title="Módulo injetado antes de o programa rodar que intercepta e conta cada tentativa de rede">preload</dfn>: um módulo carregado antes de cada processo contava tentativas de rede. Nos gates, todos os processos apresentaram <crit>contadores na faixa 63–190 — todos 0</crit>. Zero <code>surf</code>, zero <code>curl</code> (decisão autônoma D-A1, em respeito à cota de ~117 buscas/mês da regra R1).</p>
-
-  <figure class="fig-shell">
-    <div class="frame" role="img" aria-label="Fluxo de decisão: chamada de busca chega ao fan-out; existe chave Brave válida? Sim: busca prossegue sob cota de ~117 buscas por mês. Não: pipeline para com exit 78. Painel inferior: prova por instrumentação — contadores 63 a 190 por processo, todos zero por gate, preload antes do app.">
-      <p class="fhead"><span class="fno">Figura 3</span> · o invariante do sem-chave</p>
-      <svg viewBox="0 0 1000 500" xmlns="http://www.w3.org/2000/svg">
-        <defs>
-          <marker id="arr3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="var(--edge-strong)"/></marker>
-          <marker id="arr3d" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="var(--edge)"/></marker>
-        </defs>
-        <rect class="n t" x="40" y="200" width="220" height="76" rx="12"/>
-        <text class="tt" x="150" y="234" text-anchor="middle">FAN-OUT da busca</text>
-        <text class="ts" x="150" y="254" text-anchor="middle">chamada espalha p/ provedores</text>
-        <polygon class="n warn" points="560,150 700,238 560,326 420,238"/>
-        <text class="tt" x="560" y="232" text-anchor="middle">chave Brave</text>
-        <text class="tt" x="560" y="252" text-anchor="middle">válida?</text>
-        <rect class="n ok" x="760" y="126" width="200" height="66" rx="12"/>
-        <text class="tt" x="860" y="156" text-anchor="middle">busca prossegue</text>
-        <text class="ts" x="860" y="176" text-anchor="middle">cota ~117 buscas/mês (R1)</text>
-        <rect class="n bad strong" x="760" y="300" width="200" height="72" rx="12"/>
-        <text class="tt" x="860" y="332" text-anchor="middle">exit 78</text>
-        <text class="ts" x="860" y="352" text-anchor="middle">pipeline para · invariante</text>
-        <path class="edge" d="M 260 238 C 320 238 360 238 416 238" marker-end="url(#arr3)"/>
-        <text class="el" x="330" y="228">entra a chamada</text>
-        <path class="edge" d="M 700 196 C 724 182 738 172 756 164" marker-end="url(#arr3)"/>
-        <text class="el imp" x="710" y="178">sim</text>
-        <path class="edge" d="M 700 280 C 724 294 738 304 756 314" marker-end="url(#arr3)"/>
-        <text class="el imp" x="710" y="300">não</text>
-        <rect class="n dashed" x="40" y="392" width="920" height="92" rx="12"/>
-        <text class="tt" x="500" y="420" text-anchor="middle">PROVA DE ZERO REDE (instrumentação)</text>
-        <text class="ts" x="500" y="442" text-anchor="middle">contadores de rede em todos os processos · faixa 63–190 · todos 0 por gate</text>
-        <text class="ts" x="500" y="460" text-anchor="middle">preload injetado antes do app · zero surf · zero curl (D-A1)</text>
-        <path class="edge dashed deem" d="M 860 372 L 860 388" marker-end="url(#arr3d)"/>
-        <text class="el" x="874" y="382">toda execução mede</text>
-      </svg>
-    </div>
-    <figcaption>
-      <span class="claim">Sem chave Brave válida, o fan-out de busca para com <code>exit 78</code> — e a prova de que nada buscou na web está nos contadores (63–190 por processo, todos 0 em cada gate).</span>
-      <span class="support">Caminho crítico: a ramificação &ldquo;não&rdquo; (vermelha) e o painel de instrumentação — o invariante só vale se a medição estiver em todos os processos.</span>
-    </figcaption>
-  </figure>
-</section>
-
-<!-- ================= SEGMENTO 04 ================= -->
-<section class="seg" id="s4">
-  <h2><span class="num">04</span>O incidente das 01:43 — e os 6 alibis</h2>
-  <p class="lede">Na madrugada da execução, um arquivo de cache mudou. A investigação precisou provar que não foi o pipeline.</p>
-  <p>Às 01:43:19, <code>~/.cache/surf/ratelimit.json</code> registrou movimento: <strong>7 buscas reais numa chave <code>50rps</code> com <crit>ZERO cota</crit></strong>. Se o pipeline tivesse buscado, a regra da tarefa estaria quebrada. A apuração produziu <dfn class="bw" title="Evidência independente mostrando que um evento não aconteceu — aqui, que não houve busca saindo do pipeline">6 alibis independentes</dfn>, entre eles: <code>keys.json</code> <dfn class="bw" title="O arquivo não mudou um byte sequer — comparado por hash">byte-idêntico</dfn>, os contadores de rede zerados em todos os processos, e o <dfn class="bw" title="Hash que resume um arquivo; md5 igual na prática significa conteúdo igual">md5</dfn> do <code>ratelimit.json</code> estável (74639fbb) depois do incidente. O veredito registrado: o movimento tem assinatura de uso externo, e o hold de cota até 31/08 foi tratado como estado real — <crit>não restaurado</crit> (decisão D-A6).</p>
-
-  <figure class="fig-shell">
-    <div class="frame" role="img" aria-label="Incidente: às 01:43:19 o ratelimit.json muda; assinatura externa: 7 buscas reais numa chave de 50rps com cota zero. O pipeline desta execução tem contadores zerados e keys.json byte-idêntico; os 6 alibis independentes provam origem externa; hold de cota até 31/08 mantido como estado real.">
-      <p class="fhead"><span class="fno">Figura 4</span> · a cadeia de alibis</p>
-      <svg viewBox="0 0 1000 470" xmlns="http://www.w3.org/2000/svg">
-        <defs>
-          <marker id="arr4" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="var(--edge-strong)"/></marker>
-        </defs>
-        <rect class="n warn" x="40" y="60" width="300" height="92" rx="12"/>
-        <text class="tt" x="190" y="92" text-anchor="middle">01:43:19 · incidente</text>
-        <text class="ts" x="190" y="112" text-anchor="middle">~/.cache/surf/ratelimit.json muda</text>
-        <text class="ts" x="190" y="130" text-anchor="middle">hold de cota até 31/08</text>
-        <rect class="n bad" x="420" y="60" width="340" height="92" rx="12"/>
-        <text class="tt" x="590" y="92" text-anchor="middle">assinatura externa</text>
-        <text class="ts" x="590" y="112" text-anchor="middle">7 buscas reais na chave 50rps</text>
-        <text class="ts" x="590" y="130" text-anchor="middle">ZERO-cota · não é o pipeline</text>
-        <path class="edge" d="M 340 106 L 416 106" marker-end="url(#arr4)"/>
-        <text class="el" x="360" y="94">7 buscas reais</text>
-        <rect class="n" x="40" y="300" width="340" height="104" rx="12"/>
-        <text class="tt" x="210" y="332" text-anchor="middle">pipeline desta execução</text>
-        <text class="ts" x="210" y="352" text-anchor="middle">contadores zerados</text>
-        <text class="ts" x="210" y="370" text-anchor="middle">keys.json byte-idêntico</text>
-        <rect class="n ok" x="420" y="300" width="540" height="104" rx="12"/>
-        <text class="tt" x="690" y="328" text-anchor="middle">6 ALIBIS INDEPENDENTES</text>
-        <text class="ts" x="690" y="348" text-anchor="middle">keys.json byte-idêntico · contadores 0 em todos os processos</text>
-        <text class="ts" x="690" y="366" text-anchor="middle">md5 do ratelimit.json estável (74639fbb) pós-incidente</text>
-        <text class="ts" x="690" y="384" text-anchor="middle">hold de cota até 31/08 = estado REAL, não restaurado</text>
-        <path class="edge" d="M 380 352 L 416 352" marker-end="url(#arr4)"/>
-        <text class="el imp" x="388" y="340">provam origem externa</text>
-      </svg>
-    </div>
-    <figcaption>
-      <span class="claim">As 7 buscas reais da 01:43 têm assinatura de uso externo: 6 alibis independentes — entre eles <code>keys.json</code> byte-idêntico, contadores zerados, md5 do <code>ratelimit.json</code> estável (74639fbb) e o hold de cota mantido como estado real, não restaurado.</span>
-      <span class="support">A evidência que importa: nenhuma busca poderia ter saído do pipeline com contadores zerados e chave intocada — o incidente não quebrou a regra da tarefa.</span>
-    </figcaption>
-  </figure>
-</section>
-
-<!-- ================= SEGMENTO 05 ================= -->
-<section class="seg" id="s5">
-  <h2><span class="num">05</span>O portão ficou mais barato do que era</h2>
-  <p class="lede">Corrigir 85 defeitos não custou lentidão: o caminho crítico da verificação encolheu.</p>
-  <p>O custo medido do portão: <strong>npm test foi de ~110s para ~24s</strong> e o smoke de <strong>~90s para 6,5s</strong>. A causa registrada nos fatos: o <dfn class="bw" title="Espera crescente entre tentativas repetidas após erro de limite — para não martelar a API">backoff</dfn> do OpenRouter passou a ser <dfn class="bw" title="Teto de custo/tokens de uma chamada de LLM">capado pelo orçamento</dfn>. Resultado prático: <crit>o gate com 31 regras fixadas valida mais rápido do que o gate com 24</crit> — mais cobertura, menos espera.</p>
-
-  <figure class="fig-shell">
-    <div class="frame" role="img" aria-label="Gráfico de barras comparando antes e depois do custo do portão: npm test de 110 segundos para 24 segundos (cerca de 4,6 vezes mais barato); smoke de 90 segundos para 6,5 segundos (cerca de 14 vezes mais barato). Causa registrada: backoff do OpenRouter capado pelo orçamento.">
-      <p class="fhead"><span class="fno">Figura 5</span> · custo do portão, antes × depois</p>
-      <svg viewBox="0 0 1000 460" xmlns="http://www.w3.org/2000/svg">
-        <line x1="200" y1="40" x2="200" y2="330" stroke="var(--edge-strong)" stroke-width="1.6"/>
-        <line x1="200" y1="330" x2="760" y2="330" stroke="var(--edge-strong)" stroke-width="1.6"/>
-        <g fill="var(--muted-foreground)" font-family="var(--font-mono)" font-size="10">
-          <text x="200" y="352" text-anchor="middle">0s</text>
-          <text x="305" y="352" text-anchor="middle">25s</text>
-          <text x="410" y="352" text-anchor="middle">50s</text>
-          <text x="515" y="352" text-anchor="middle">75s</text>
-          <text x="620" y="352" text-anchor="middle">100s</text>
-          <text x="725" y="352" text-anchor="middle">125s</text>
-        </g>
-        <g>
-          <rect x="200" y="66" width="462" height="34" rx="4" fill="var(--muted)" stroke="var(--border)"/>
-          <text class="ms" x="196" y="80" text-anchor="end" fill="var(--foreground)">npm test · antes</text>
-          <text class="ms" x="668" y="88" fill="var(--foreground)">~110s</text>
-          <rect x="200" y="112" width="101" height="34" rx="4" fill="var(--primary)"/>
-          <text class="ms" x="196" y="126" text-anchor="end" fill="var(--foreground)">npm test · depois</text>
-          <text class="ms" x="310" y="134" fill="var(--primary-foreground)">~24s · ×4,6 mais barato</text>
-          <rect x="200" y="226" width="378" height="34" rx="4" fill="var(--muted)" stroke="var(--border)"/>
-          <text class="ms" x="196" y="240" text-anchor="end" fill="var(--foreground)">smoke · antes</text>
-          <text class="ms" x="584" y="248" fill="var(--foreground)">~90s</text>
-          <rect x="200" y="272" width="27" height="34" rx="4" fill="var(--primary)"/>
-          <text class="ms" x="196" y="286" text-anchor="end" fill="var(--foreground)">smoke · depois</text>
-          <text class="ms" x="236" y="294" fill="var(--primary-foreground)">6,5s · ×14 mais barato</text>
-        </g>
-        <rect class="n dashed" x="200" y="382" width="760" height="56" rx="10"/>
-        <text class="ts" x="580" y="404" text-anchor="middle">causa registrada nos fatos: backoff do OpenRouter capado pelo orçamento</text>
-        <text class="ts" x="580" y="422" text-anchor="middle">razões ×4,6 e ×14 são aritmética direta (110/24 e 90/6,5)</text>
-      </svg>
-    </div>
-    <figcaption>
-      <span class="claim">O portão ficou mais barato do que era: npm test ~110s → ~24s (×4,6) e smoke ~90s → 6,5s (×14) — o backoff do OpenRouter, capado pelo orçamento, é a causa registrada.</span>
-      <span class="support">Tempo não foi trocado por cobertura: o mesmo portão passou de 24 para 31 regras fixed no gate-state, com 0 bugs proven.</span>
-    </figcaption>
-  </figure>
-</section>
-
-<!-- ================= SEGMENTO 06 ================= -->
-<section class="seg" id="s6">
-  <h2><span class="num">06</span>Conversões de régua: desbloquear sem afrouxar</h2>
-  <p class="lede">Alguns defeitos não eram do código — eram da régua que o media. Calibrar a régua desbloqueou fixes sem perder asserção.</p>
-  <p>As suítes de regressão usam <dfn class="bw" title="Regra de teste adversarial que proíbe um comportamento (ex.: 'não toque neste campo'); violação reprova">réguas</dfn> — testes que punem desvios. Quando uma régua proibia algo que o <dfn class="bw" title="Comportamento prometido, independente de como foi implementado">contrato</dfn> não promete, o fix legítimo era classificado como violação e bloqueado. A saída foi a classificação <strong>&ldquo;NOT a contract&rdquo;</strong>: o comportamento medido não faz parte do contrato, então <crit>recalibrar a régua — sem tocar na condição — não afrouxa promessa nenhuma</crit>.</p>
-  <p>Foram 3 conversões autorizadas (P1b em <code>:281</code>, C1 em lib-install, D1b em <code>:376</code>) + o BUG-07 (convertido para <em>medir o silêncio</em>, o que os fatos chamam de contrato) + 2 funções <code>eq()</code> novas — todas no modelo &ldquo;NOT a contract&rdquo;, condição inalterada (decisão D-A5).</p>
-
-  <figure class="fig-shell">
-    <div class="frame" role="img" aria-label="Comparação antes e depois: antes, a régua proíbe um comportamento, classifica o defeito legítimo como violação e bloqueia o fix. Depois, a régua recalibrada no modelo NOT a contract, com condição inalterada, classifica o comportamento como fora do contrato, desbloqueia o fix e segue medindo. Linha inferior: conversões P1b, C1, D1b, BUG-07 e 2 eq novas, condição inalterada.">
-      <p class="fhead"><span class="fno">Figura 6</span> · recalibrar a régua, manter a condição</p>
-      <svg viewBox="0 0 1000 520" xmlns="http://www.w3.org/2000/svg">
-        <defs>
-          <marker id="arr6" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" fill="var(--edge-strong)"/></marker>
-        </defs>
-        <text class="ms" x="250" y="40" text-anchor="middle" fill="var(--muted-foreground)">ANTES · régua dura</text>
-        <rect class="n" x="60" y="58" width="380" height="70" rx="12"/>
-        <text class="tt" x="250" y="86" text-anchor="middle">régua proíbe o comportamento</text>
-        <text class="ts" x="250" y="106" text-anchor="middle">sem distinguir contrato × implementação</text>
-        <rect class="n bad" x="60" y="188" width="380" height="70" rx="12"/>
-        <text class="tt" x="250" y="216" text-anchor="middle">defeito legítimo → &ldquo;violação da régua&rdquo;</text>
-        <text class="ts" x="250" y="236" text-anchor="middle">classificação errada</text>
-        <rect class="n bad strong" x="60" y="318" width="380" height="70" rx="12"/>
-        <text class="tt" x="250" y="346" text-anchor="middle">fix bloqueado</text>
-        <text class="ts" x="250" y="366" text-anchor="middle">asserção indevidamente mantida</text>
-        <path class="edge" d="M 250 128 L 250 184" marker-end="url(#arr6)"/>
-        <text class="el" x="262" y="160">classifica como violação</text>
-        <path class="edge" d="M 250 258 L 250 314" marker-end="url(#arr6)"/>
-        <text class="el" x="262" y="290">rejeita o fix</text>
-        <text class="ms" x="750" y="40" text-anchor="middle" fill="var(--muted-foreground)">DEPOIS · régua recalibrada (&ldquo;NOT a contract&rdquo;)</text>
-        <rect class="n ok" x="560" y="58" width="380" height="70" rx="12"/>
-        <text class="tt" x="750" y="86" text-anchor="middle">modelo &ldquo;NOT a contract&rdquo;</text>
-        <text class="ts" x="750" y="106" text-anchor="middle">comportamento medido fora do contrato</text>
-        <rect class="n" x="560" y="188" width="380" height="70" rx="12"/>
-        <text class="tt" x="750" y="216" text-anchor="middle">condição inalterada</text>
-        <text class="ts" x="750" y="236" text-anchor="middle">mesma medição de sempre</text>
-        <rect class="n ok strong" x="560" y="318" width="380" height="70" rx="12"/>
-        <text class="tt" x="750" y="346" text-anchor="middle">defeito vira fix · régua segue</text>
-        <text class="ts" x="750" y="366" text-anchor="middle">medindo o contrato, sem afrouxar</text>
-        <path class="edge" d="M 750 128 L 750 184" marker-end="url(#arr6)"/>
-        <text class="el" x="762" y="160">comportamento não é contrato</text>
-        <path class="edge" d="M 750 258 L 750 314" marker-end="url(#arr6)"/>
-        <text class="el imp" x="762" y="290">desbloqueia o fix</text>
-        <rect class="n dashed" x="60" y="430" width="880" height="58" rx="10"/>
-        <text class="ts" x="500" y="454" text-anchor="middle">conversões: P1b (:281) · C1 (lib-install) · D1b (:376) · BUG-07 (agora mede o silêncio)</text>
-        <text class="ts" x="500" y="472" text-anchor="middle">+ 2 eq() novas · todas com condição inalterada (D-A5)</text>
-      </svg>
-    </div>
-    <figcaption>
-      <span class="claim">Três conversões de régua no modelo &ldquo;NOT a contract&rdquo;, com a condição inalterada, transformaram bloqueios falsos em fixes — e o BUG-07 virou uma régua que mede o silêncio.</span>
-      <span class="support">A promessa que não muda: a condição que dispara a régua continua a mesma; muda apenas a classificação do que ela está medindo.</span>
-    </figcaption>
-  </figure>
-</section>
-
-<!-- ================= SEGMENTO 07 ================= -->
-<section class="seg" id="s7">
-  <h2><span class="num">07</span>Verificação: três validações independentes</h2>
-  <p class="lede">GATE GREEN não foi dito uma vez só — foi provado três vezes, por caminhos independentes, mais a revisão adversarial de cada frente.</p>
-  <p>A linha de base era <code>main@13de39c</code>: <strong>1083 asserções em 7 suítes</strong>, portão verde. Uma <dfn class="bw" title="Afirmação verificável dentro de um teste; falhou = teste vermelho">asserção</dfn> é a unidade de verdade de um teste: cada uma é uma afirmação que o código precisa sustentar. Depois da integração da Onda 1 e da Onda 2, as validações independentes marcaram <crit>1097 asserções / 0 falhas</crit> em cada uma. O gate final soma as 3 suítes de regressão novas (núcleo 69, superfície 129, busca 115 — esta última registrada nos fatos como &ldquo;a integrar&rdquo;), totalizando <strong>~1410 asserções previstas</strong>.</p>
-
-  <div class="tbl-wrap">
-    <table>
-      <caption class="note" style="text-align:left;margin-bottom:8px;">Validações e régua de portão (fatos)</caption>
-      <thead><tr><th>Validação</th><th>Resultado</th></tr></thead>
-      <tbody>
-        <tr><td>Onda 1 integrada</td><td><span class="pill ok">GATE GREEN</span> 1097 asserções / 0 falhas</td></tr>
-        <tr><td>Onda 2 integrada</td><td><span class="pill ok">GATE GREEN</span> 1097 asserções / 0 falhas</td></tr>
-        <tr><td>Gate final previsto</td><td><span class="pill pri">GREEN</span> 3 suítes novas: núcleo 69 + superfície 129 + busca 115 → ~1410 asserções totais previstas</td></tr>
-      </tbody>
-    </table>
-  </div>
-  <div class="tbl-wrap">
-    <table>
-      <caption class="note" style="text-align:left;margin-bottom:8px;">Estado das réguas de portão ao fim da Onda 7</caption>
-      <thead><tr><th>Régua</th><th>Estado</th></tr></thead>
-      <tbody>
-        <tr><td><code>gate-state</code></td><td><strong>24 → 31 fixed</strong> · <span class="pill ok">0 bugs proven</span> — todos os defeitos conhecidos do portão consertados</td></tr>
-        <tr><td><code>lib-install</code></td><td>38 fixed / 6 reproduced</td></tr>
-        <tr><td><code>brave-limits</code></td><td>137 → 139 (+2 contrato) · BUG-07 convertido (mede o silêncio)</td></tr>
-        <tr><td><code>loop-frontier</code></td><td>115 · BUG-09 flipou (janela FIFO 200 + contador total)</td></tr>
-      </tbody>
-    </table>
-  </div>
-  <div class="tbl-wrap">
-    <table>
-      <caption class="note" style="text-align:left;margin-bottom:8px;">Revisão adversarial da integração</caption>
-      <thead><tr><th>Alvo</th><th>Veredito</th></tr></thead>
-      <tbody>
-        <tr><td>15 frentes (F1–F15)</td><td>15/15 revisadas · <span class="pill ok">14 APPROVE</span> · <span class="pill warn">F4 WARNING</span> → fix integrado · <span class="pill warn">F6 WARNING</span> sem material</td></tr>
-        <tr><td>Diff integrado</td><td><span class="pill warn">WARNING</span> → fix-docs integrado</td></tr>
-        <tr><td>Revisores de teste</td><td>2 <span class="pill warn">WARNING</span> → fixes de suíte integrados/pendentes</td></tr>
-        <tr><td>Rede</td><td><span class="pill ok">zero</span> provada por preload — contadores 63–190 por processo, todos 0 por gate (D-A1: zero surf, zero curl)</td></tr>
-        <tr><td>Artefatos reais</td><td>md5 estáveis — <code>keys</code> 58532c4b · <code>ratelimit</code> 74639fbb (pós-incidente)</td></tr>
-      </tbody>
-    </table>
-  </div>
-</section>
-
-<!-- ================= SEGMENTO 08 ================= -->
-<section class="seg" id="s8">
-  <h2><span class="num">08</span>Resultado: números, madrugada e o que ficou de fora</h2>
-  <p class="lede">O que entrou, em quanto tempo, e — tão importante quanto — o que não entrou e por quê.</p>
-  <p>Tudo o que era liquidável foi liquidado. O que ficou de fora <crit>não ficou por esquecimento: ficou com evidência</crit> — defeitos classificados como impossíveis, deliberados ou dependentes de decisão externa, todos registrados no relatório da execução.</p>
-
-  <div class="tbl-wrap">
-    <table>
-      <caption class="note" style="text-align:left;margin-bottom:8px;">Não-fechados com evidência (fatos — todos registrados no relatório)</caption>
-      <thead><tr><th>Defeito</th><th>Veredito</th><th>Evidência registrada</th></tr></thead>
-      <tbody>
-        <tr><td><code>BUG-23</code></td><td>deliberado</td><td>régua: contrato + tautologia + §2.2</td></tr>
-        <tr><td><code>H10-bug</code></td><td>impossível</td><td>sonda de SO</td></tr>
-        <tr><td><code>#18</code></td><td>deliberado</td><td>predicado na camada errada</td></tr>
-        <tr><td>atributo HTML</td><td>impossível</td><td>parser</td></tr>
-        <tr><td><code>D1-F8</code> com portão</td><td>deliberado</td><td>ok + bug na mesma condição</td></tr>
-        <tr><td><code>H6</code></td><td>deliberado</td><td>redesign proibido</td></tr>
-        <tr><td><code>BUG-07-08</code></td><td>deliberado</td><td>D6</td></tr>
-        <tr><td><code>BUG-33</code></td><td>deliberado</td><td>pinado :931/:932</td></tr>
-      </tbody>
-    </table>
-  </div>
-
-  <h3>A madrugada em linha do tempo</h3>
-  <ul class="tl">
-    <li><span class="t">01:35</span> <span class="d">FASE 0 — baseline <code>main@13de39c</code>, snapshot e portão inicial.</span></li>
-    <li><span class="t">01:41</span> <span class="d">Disparo das 15 frentes em worktrees disjuntas.</span></li>
-    <li><span class="t">01:43</span> <span class="d">Incidente externo de ratelimit — 7 buscas reais numa chave 50rps/ZERO-cota; 6 alibis independentes exoneram o pipeline.</span></li>
-    <li><span class="t">02:00–02:12</span> <span class="d">Todas as frentes completas; revisores v1 mortos por modelo não suportado (400 <code>model_not_supported</code>, modelo haiku) — re-dispatch com o padrão.</span></li>
-    <li><span class="t">02:2x</span> <span class="d">Re-dispatch dos revisores v2 + REPLAN v2 — acha o BUG-09 (executado: janela FIFO 200).</span></li>
-    <li><span class="t">03:0x</span> <span class="d">Merges 15/15 com gates + subwaves de teste/validação.</span></li>
-    <li><span class="t">03:5x</span> <span class="d">Reviews 15/15 + validações + fixes coordenados (ledger / docs / suítes).</span></li>
-    <li><span class="t">fim</span> <span class="d">Convergência (REPLAN v3 sem trabalho novo) → COMMIT-FINAL.</span></li>
-  </ul>
-
-  <div class="callout ok">
-    <strong>Recorte final:</strong> 18 squash commits · 3 validações GATE GREEN independentes · gate-state 31 fixed / 0 bugs proven · ~1410 asserções previstas · portão npm test ~24s (era ~110s) · smoke 6,5s (era ~90s) · zero rede provada · 8 não-fechados com evidência.
-  </div>
-</section>
-
-<!-- ================= DOBRAS (LEITOR EXPERIENTE PULA) ================= -->
-<details class="fold" id="exp">
-  <summary>Para o leitor experiente — a camada completa (commits, decisões, incidentes, glossário)</summary>
-  <div class="fold-body">
-
-    <h3>Os 18 squash commits (tópicos verbatim do arquivo de fatos)</h3>
-    <div class="commit-list">
-      <span class="h">Onda 7 (15):</span> 591bb20 preflight (PRESENT_UNPROVEN) · 4b1932e state (TTL unilateral; P1/S2/S5) · 9da0951 dispatch (quota skip; D1) · 47df1e6 env (burn; M1/M2/D2/D3/P5) · 88799f0 api/search (G4 rejeita 78; C1-C3; E1/E2; B1) · 7e25a1a ratelimit+cache (7 bugs) · 5e6e348 brave-limits (BUG-07 contrato) · 1d902d6 orchestrator/frontier/heuristics (#31 sete flags; BUG-34; 10/11; 24; phantom) · b9681f1 openrouter (backoff 84s→24s; smoke 6,5s) · 3547caa html (surrogate; CR; U+00AD; U+FFF9-FFFB; noncharacters) · 6d1008d ledger (urls sem host; digest blindado; BUG-13/15/19) · 01cb491 install (H3/H4/H11/H12; harnessDirs) · d375a70 CLI (12 defeitos; mask única) · 69986b6 README/surf (3 skills derivadas; versão única) · c144dbd SKILL.md (R4 por fluxo; teto 20%; B-08; convenções).<br>
-      <span class="h">Onda 2 (1):</span> 97d7d96 BUG-09 (janela FIFO 200 + contador total).<br>
-      <span class="h">Fixes coordenados (3):</span> d25d27d fix-final-ledger (canonicalUrl raiz idempotente — errata de revisor) · 14a146b fix-final-docs (errata R4/barreira; comentário) · (D1 e G4/C1 entraram nos merges das próprias frentes).<br>
-      <span class="h">Testes de regressão (arquivos novos em <code>test/adversarial/</code>):</span> 2974706 nucleo (69) · d271a03 superficie (129) · (busca 115 — a integrar).
-    </div>
-    <p class="note">Os fatos registram &ldquo;18 squash commits&rdquo; como total da entrega; a composição acima reproduz as listas do relatório com seus rótulos originais.</p>
-
-    <h3>Decisões autônomas registradas (D-A1 … D-A6)</h3>
-    <ul class="clean">
-      <li><strong>D-A1</strong> — pesquisa web PROIBIDA (regra R1 da tarefa: cota ~117 buscas/mês). Zero surf, zero curl; prova por instrumentação em todos os processos (contadores 63–190, todos 0 por gate).</li>
-      <li><strong>D-A2</strong> — scratchpad <code>/tmp/surf-audit-20260830/&lt;frente&gt;/</code>.</li>
-      <li><strong>D-A3</strong> — <code>HOME=$(mktemp -d)</code> em todo teste (armadilha H10: constantes congelam no import).</li>
-      <li><strong>D-A4</strong> — worktrees da execução anterior (20260829, 15, locked) NÃO tocadas (terceiros).</li>
-      <li><strong>D-A5</strong> — 3 conversões de régua autorizadas (P1b :281, C1 lib-install, D1b :376) + BUG-07 (silêncio) + 2 <code>eq()</code> novas — todas no modelo &ldquo;NOT a contract&rdquo;, condição inalterada.</li>
-      <li><strong>D-A6</strong> — incidente <code>~/.cache/surf/ratelimit.json</code> 01:43:19 (7 buscas reais na chave 50rps/ZERO-cota; <code>keys.json</code> byte-idêntico; 6 alibis independentes). Hold de cota até 31/08 é estado REAL — não restaurado.</li>
-    </ul>
-
-    <h3>Incidentes da sessão (barreira + análise)</h3>
-    <ul class="clean">
-      <li><strong>Revisores v1 mortos:</strong> 15 revisores v1 mortos por 400 <code>model_not_supported</code> (modelo haiku não suportado no provedor) — re-dispatch com o padrão.</li>
-      <li><strong>Autofix do biome:</strong> o corretor automático de estilo do harness reformatou arquivos no BASE 3× — guarda pré-merge restaurada.</li>
-      <li><strong>Gates mortos:</strong> 2× por timeout do bash pai sob load 50–60 (processos de vitest/vite de outro projeto do usuário).</li>
-      <li><strong>Asserção de timing flaky:</strong> <code>first &lt; 500ms</code> falhou sob load alto — ambiental, comprovada (a mesma suíte passou 3× com load baixo).</li>
-    </ul>
-
-    <h3>Glossário fechado (toda buzzword do documento, definida uma vez)</h3>
-    <div class="tbl-wrap">
-      <table>
-        <thead><tr><th>Termo</th><th>Definição</th></tr></thead>
-        <tbody>
-          <tr><td>auditoria adversarial</td><td>Revisão feita por agentes com instrução explícita de achar defeitos, não de aprovar.</td></tr>
-          <tr><td>débito técnico</td><td>Trabalho de qualidade adiado que volta mais caro depois.</td></tr>
-          <tr><td>deep-orchestrator</td><td>Invólucro que divide a tarefa em ondas de agentes paralelos em worktrees, revisa e integra com portão.</td></tr>
-          <tr><td>worktree</td><td>Cópia de trabalho isolada do mesmo repositório (git worktree), com branch própria, que não conflita com as outras.</td></tr>
-          <tr><td>barreira</td><td>Espera coletiva: a onda seguinte só dispara quando todos os agentes da anterior terminaram.</td></tr>
-          <tr><td>subwave</td><td>Onda de teste/validação que roda junto da onda seguinte, não depois dela.</td></tr>
-          <tr><td>squash-merge</td><td>Integrar uma pilha de commits como um commit único, com histórico limpo.</td></tr>
-          <tr><td>gate (portão)</td><td>Cheque obrigatório (build + testes + lint) que bloqueia a integração se falhar.</td></tr>
-          <tr><td>GATE GREEN</td><td>Estado em que o portão passa sem nenhuma falha.</td></tr>
-          <tr><td>REPLAN / convergência</td><td>Replanejamento do orquestrador quando uma onda revela trabalho novo; convergência é o estado em que replanejamentos não acham mais nada.</td></tr>
-          <tr><td>invariante</td><td>Propriedade que deve valer em toda execução.</td></tr>
-          <tr><td>exit 78</td><td>Código de saída padrão &ldquo;configuration error&rdquo;; aqui, a parada obrigatória quando não há chave válida.</td></tr>
-          <tr><td>fan-out</td><td>Ponto que espalha o trabalho para muitas filhas; aqui, o disparo de buscas para os provedores.</td></tr>
-          <tr><td>preload / instrumentação</td><td>Módulo injetado antes de o programa rodar que intercepta e conta tentativas de rede; a contagem é a instrumentação.</td></tr>
-          <tr><td>alibi</td><td>Evidência independente mostrando que um evento não aconteceu.</td></tr>
-          <tr><td>byte-idêntico</td><td>O arquivo não mudou um byte sequer — comparado por hash.</td></tr>
-          <tr><td>md5</td><td>Hash que resume um arquivo; md5 igual na prática significa conteúdo igual.</td></tr>
-          <tr><td>backoff</td><td>Espera crescente entre tentativas repetidas após erro de limite — para não martelar a API.</td></tr>
-          <tr><td>orçamento (de chamada)</td><td>Teto de custo/tokens de uma chamada de LLM.</td></tr>
-          <tr><td>régua</td><td>Regra de teste adversarial que proíbe um comportamento; violação reprova.</td></tr>
-          <tr><td>contrato de teste</td><td>Comportamento prometido, independente de como foi implementado.</td></tr>
-          <tr><td>&ldquo;NOT a contract&rdquo;</td><td>Classificação da régua: o comportamento medido não faz parte do contrato — recalibrar não afrouxa promessa.</td></tr>
-          <tr><td>asserção</td><td>Afirmação verificável dentro de um teste; falhou = teste vermelho.</td></tr>
-          <tr><td>flaky</td><td>Teste que ora passa, ora falha sem mudança de código.</td></tr>
-          <tr><td>phantom</td><td>Flag que parecia existir mas não existia (defeito fantasma).</td></tr>
-          <tr><td>surrogate · CR · U+00AD · U+FFF9–FFFB · noncharacters</td><td>Unidade de código UTF-16 isolada · carriage return · hífen macio · marcas de anotação interlinear · não-caracteres Unicode — classes de caracteres problemáticos tratadas na frente html.</td></tr>
-        </tbody>
-      </table>
-    </div>
-
-    <h3>Verificação técnica (detalhe)</h3>
-    <ul class="clean">
-      <li>3 validações GATE GREEN (onda 1 integrada, onda 2 integrada, gate final — este a confirmar com as 3 suítes de regressão novas).</li>
-      <li>Zero rede provada por preload — contadores em todos os processos, faixa 63–190, todos 0 por gate.</li>
-      <li>md5 dos arquivos reais estáveis: <code>keys</code> 58532c4b · <code>ratelimit</code> 74639fbb (pós-incidente).</li>
-      <li>REPLAN v1 interrompido → v2 achou BUG-09 (executado) → v3 convergência.</li>
-    </ul>
-
-  </div>
-</details>
-
-<!-- ================= FOOTER ================= -->
-<footer>
-  <p><strong>Fonte única de fatos:</strong> <code>.deep-orchestrator/run-20260830-013539-1402175/explainer/fatos.md</code> — nada nesta página foi inventado; números derivados (201−116; ×4,6; ×14; ~1410) são aritmética direta sobre valores desse arquivo e estão marcados como tal.</p>
-  <p><strong>Validade:</strong> execução de 2026-08-30, baseline <code>main@13de39c</code>. Fatos que envelhecem: estado das réguas (gate-state 31 fixed, lib-install 38/6, brave-limits 139, loop-frontier 115) e a suíte de busca registrada como &ldquo;a integrar&rdquo;.</p>
-  <p>Gerado como explicador didático da Onda 7 · público: desenvolvedor que conhece o surf-agent-skill por cima · leitor experiente: use a dobra acima.</p>
-</footer>
-
-</div>
-</body>
+  </body>
 </html>
