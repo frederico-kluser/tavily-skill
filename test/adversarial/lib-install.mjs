@@ -753,10 +753,21 @@ section('harness-install: legacy cleanup');
   const dir = hi.HARNESS_DIRS[1];
   mkdirSync(dir, { recursive: true });
   const d = box('legacy');
-  const oldPkg = fakePkg(d, 'v7');
-  symlinkSync(oldPkg, path.join(dir, 'surf-free-agent-skill'));
-  symlinkSync(oldPkg, path.join(dir, 'tavily'));
-  symlinkSync(path.join(d, 'gone-away'), path.join(dir, 'surf-skill')); // broken legacy link
+  // Links a PRIOR RELEASE OF THIS PACKAGE created: absolute, and pointing into
+  // the package root — which is ROOT, exactly what harness-install.mjs derives
+  // from its own module URL. The fixture has to be provable, because
+  // cleanupLegacy() now deletes only what it can prove is ours (H13); a link
+  // into an arbitrary directory is indistinguishable from a user's own.
+  // `surf-free-agent-skill` is the real v7→v8 shape: OURS and DANGLING, since
+  // v8 deleted the directory it points at.
+  symlinkSync(path.join(ROOT, 'skills', 'surf-free-agent-skill'), path.join(dir, 'surf-free-agent-skill'));
+  symlinkSync(ROOT, path.join(dir, 'tavily')); // pre-rename link to the root skill
+  symlinkSync(path.join(ROOT, 'gone-away'), path.join(dir, 'surf-skill')); // broken legacy link
+  // The npm package itself was renamed (surf-skill → surf-agent-skill), so a
+  // link from v7-and-earlier points at a SIBLING install, not into this root.
+  const oldPkg = path.join(d, 'node_modules', 'surf-skill');
+  mkdirSync(oldPkg, { recursive: true });
+  symlinkSync(oldPkg, path.join(dir, 'surf-search-skill'));
   const res = await hi.cleanupLegacy();
   ok('the v8-deleted surf-free-agent-skill symlink is really removed',
     !existsSync(path.join(dir, 'surf-free-agent-skill')) &&
@@ -765,6 +776,8 @@ section('harness-install: legacy cleanup');
   let brokenGone = true;
   try { lstatSync(path.join(dir, 'surf-skill')); brokenGone = false; } catch {}
   ok('a BROKEN legacy symlink is removed too (lstat, not existsSync)', brokenGone);
+  ok('a link into the PRE-RENAME package (node_modules/surf-skill) is ours too, and goes',
+    !existsSync(path.join(dir, 'surf-search-skill')) && !lstatOrNull(path.join(dir, 'surf-search-skill')));
 
   // The Windows fallback in this same module writes a real directory copy.
   // cleanupLegacy only ever removes symlinks, so that copy is immortal.
@@ -777,16 +790,53 @@ section('harness-install: legacy cleanup');
   rmSync(dir, { recursive: true, force: true });
 }
 {
-  // LEGACY_NAMES contains bare 'surf'. Any symlink with that name dies, whoever made it.
+  // LEGACY_NAMES contains bare 'surf', and 'tavily' — the competitor's product
+  // name, the likeliest collision of all. Any symlink wearing one of them used
+  // to die, whoever made it.
+  //
+  // NOT a contract. This was an ok() that asserted the deletion of a THIRD
+  // PARTY'S file as correct behaviour ("documented at harness-install.mjs:30")
+  // — the same defect H5 records for unlinkIfOurs(), reached through the second
+  // entry point, and since the preuninstall sweep it fires on uninstall too.
+  // The condition below is the ok()'s own condition, unchanged; only the
+  // channel changed, so a fix reads FIXED instead of failing the run.
   const dir = hi.HARNESS_DIRS[1];
   mkdirSync(dir, { recursive: true });
   const d = box('legacy-collateral');
   const mine = path.join(d, 'my-own-surf-skill');
-  mkdirSync(mine);
+  mkdirSync(mine); writeFileSync(path.join(mine, 'SKILL.md'), 'MY OWN SKILL');
   symlinkSync(mine, path.join(dir, 'surf'));
-  await hi.cleanupLegacy();
-  ok('an unrelated user skill named "surf" is deleted by every install (documented at harness-install.mjs:30)',
-    !existsSync(path.join(dir, 'surf')));
+  const theirs = path.join(d, 'their-tavily');
+  mkdirSync(theirs); writeFileSync(path.join(theirs, 'SKILL.md'), 'THEIR SKILL');
+  symlinkSync(theirs, path.join(dir, 'tavily'));
+  // A real directory wearing a legacy name — never a candidate at all.
+  mkdirSync(path.join(dir, 'surf-plan'));
+  writeFileSync(path.join(dir, 'surf-plan', 'SKILL.md'), 'MY PLAN SKILL');
+  // The hostile case: a RELATIVE link of the user's whose stored target, joined
+  // to a cwd npm happens to have parked us in, lands INSIDE our package root.
+  // Resolved the kernel's way (against dirname(link)) it points nowhere near.
+  symlinkSync(path.join('skills', 'surf-free-agent-skill'), path.join(dir, 'tvly'));
+  const cwd0 = process.cwd();
+  process.chdir(ROOT);
+  const res = await hi.cleanupLegacy();
+  process.chdir(cwd0);
+  bug('H13', 'cleanupLegacy() deletes ANY symlink wearing a legacy name, ours or not — a user\'s own skill called "surf" or "tavily" is destroyed by every install, and by every uninstall since the preuninstall sweep',
+    !existsSync(path.join(dir, 'surf')),
+    'harness-install.mjs:205 unlinked by NAME with no proof of ownership — the defect H5 closed in unlinkIfOurs(), through the second entry point');
+  ok('a user symlink named "tavily" survives — the name is a legacy skill of ours AND a real product of someone else\'s',
+    existsSync(path.join(dir, 'tavily')));
+  ok('a real directory wearing a legacy name is never touched',
+    lstatSync(path.join(dir, 'surf-plan')).isDirectory() &&
+    readFileSync(path.join(dir, 'surf-plan', 'SKILL.md'), 'utf8') === 'MY PLAN SKILL');
+  ok('a BROKEN link of the user\'s survives a hostile cwd — an unprovable link is kept, never guessed at',
+    !!lstatOrNull(path.join(dir, 'tvly')));
+  ok('the files behind the user\'s links are untouched (we remove link entries, never targets)',
+    existsSync(path.join(mine, 'SKILL.md')) && existsSync(path.join(theirs, 'SKILL.md')));
+  ok('every link we refused to remove is reported back to the caller',
+    Array.isArray(res.kept) &&
+    ['surf', 'tavily', 'tvly'].every(n => res.kept.some(k => k.kept === path.join(dir, n))),
+    JSON.stringify(res.kept));
+  eq('...and nothing else was removed from that dir', res.filter(r => String(r.removed).startsWith(dir)).length, 0);
   rmSync(dir, { recursive: true, force: true });
 }
 {
