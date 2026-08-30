@@ -1,13 +1,31 @@
-// State management: ~/.config/surf/keys.json with atomic writes, lockfile,
-// monthly auto-reset of burned keys, a cached validation verdict per key, and
-// one-shot migrations for two pieces of history: the legacy
-// ~/.cache/tavily-skill/ directory, and Tavily/Parallel key sections left over
-// from v7 (rescued to a sidecar file, never silently deleted).
+// State management: ~/.config/surf/keys.json with atomic writes, a
+// cross-process lockfile, monthly auto-reset of burned keys, a cached
+// validation verdict per key, and one-shot migrations for two pieces of
+// history: the legacy ~/.cache/tavily-skill/ directory, and Tavily/Parallel key
+// sections left over from v7 (rescued to a sidecar file, never silently
+// deleted).
+//
+// Two invariants this module owes the rest of surf, because the product runs
+// up to `--sub-agents` PROCESSES at once and every one of them writes here:
+//
+//   1. A save never loses another process's write. The lockfile serialises the
+//      file replacement, but serialising the replacement is not enough — each
+//      writer holds a whole-file snapshot taken at loadState() time, so the
+//      last one to finish would erase everybody else. saveStateAtomic()
+//      therefore re-reads keys.json inside the lock and, when the file moved
+//      under it, three-way merges (snapshot = base, in-memory = mine, disk =
+//      theirs) instead of overwriting.
+//
+//   2. A key is never destroyed silently. Anything we cannot parse is copied
+//      aside BEFORE the next write, the copy's path is printed, and the raw
+//      bytes are also carried forward inside keys.json under `unreadable`, so
+//      the user's only copy of a key survives even if they never read stderr.
 
-import { mkdir, readFile, writeFile, rename, rm, stat, chmod, readdir, open } from 'node:fs/promises';
+import { mkdir, readFile, writeFile, rename, rm, stat, chmod, readdir } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
-import { homedir } from 'node:os';
-import { join, dirname } from 'node:path';
+import { homedir, hostname } from 'node:os';
+import { join } from 'node:path';
+import { createHash, randomBytes } from 'node:crypto';
 import { sleep } from './flags.mjs';
 
 export const CONFIG_DIR = join(homedir(), '.config', 'surf');
@@ -30,6 +48,11 @@ export const SCHEMA_VERSION = 1;
 
 const BURNED_CAP = 50;
 
+// How much of an unreadable keys.json is carried forward inside the new one.
+// The sidecar copy is always complete; this inline copy is the belt to its
+// braces, so it is capped rather than unbounded.
+const UNREADABLE_RAW_CAP = 128 * 1024;
+
 export function blankProvider() {
   return { keys: [], current: 0, burned: [], cooldowns: [], validated: [] };
 }
@@ -50,31 +73,106 @@ async function ensureConfigDir() {
   await mkdir(CONFIG_DIR, { recursive: true });
 }
 
-async function acquireLock(timeoutMs = 2000) {
+// ---------------------------------------------------------------- lock ---
+// The lock has to hold between PROCESSES, so it is an O_EXCL file creation —
+// the one primitive POSIX gives us that two node processes cannot both win.
+// Its content names the holder so a crashed holder can be told apart from a
+// slow one: breaking a live holder's lock is exactly the lost update this
+// module exists to prevent, and never breaking one deadlocks the fleet.
+
+const LOCK_HOST = hostname();
+const lockOwnerTag = () => `${process.pid}@${LOCK_HOST}:${new Date().toISOString()}`;
+
+// A lockfile whose content we do not recognise (an empty file, a hand-written
+// placeholder, a half-written owner tag) is only broken once it is this old —
+// long enough that we cannot mistake another process's half-finished acquire
+// for a corpse, short enough that nobody waits on garbage.
+const UNKNOWN_LOCK_GRACE_MS = 750;
+
+// Set while this process owns the lock, so a lockfile left behind by an older
+// process that happened to share our pid is recognised as the corpse it is.
+let lockHeld = false;
+
+function holderIsAlive(tag) {
+  const m = /^(\d+)@([^:]*)/.exec(String(tag || ''));
+  if (!m) return null;                       // unrecognised — caller applies the grace period
+  if (m[2] && m[2] !== LOCK_HOST) return true; // another machine on a shared FS: never break it
+  const pid = Number(m[1]);
+  if (!Number.isInteger(pid) || pid <= 0) return null;
+  if (pid === process.pid) return lockHeld;  // ours, or a recycled pid's orphan
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    return e && e.code === 'EPERM';          // alive but not ours to signal
+  }
+}
+
+async function lockAgeMs() {
+  try {
+    const st = await stat(LOCK_FILE);
+    return Math.max(0, Date.now() - st.mtimeMs);
+  } catch {
+    return Infinity;
+  }
+}
+
+/**
+ * Take the cross-process lock. Returns once this process owns it.
+ * `timeoutMs` bounds how long a *live* holder is waited on before its lock is
+ * broken anyway — a hung holder must not wedge every other sub-agent forever.
+ */
+async function acquireLock(timeoutMs = 10000) {
   await ensureConfigDir();
   const start = Date.now();
-  let backoff = 20;
+  let backoff = 10;
   while (true) {
     try {
-      const fh = await open(LOCK_FILE, 'wx');
-      await fh.close();
+      await writeFile(LOCK_FILE, lockOwnerTag(), { flag: 'wx', mode: 0o600 });
+      lockHeld = true;
       return;
     } catch (e) {
       if (e.code !== 'EEXIST') throw e;
-      if (Date.now() - start > timeoutMs) {
-        try { await rm(LOCK_FILE, { force: true }); } catch {}
-        const fh = await open(LOCK_FILE, 'wx').catch(() => null);
-        if (fh) { await fh.close(); return; }
-        throw new Error('Could not acquire keys.json lock');
-      }
-      await sleep(backoff);
-      backoff = Math.min(backoff * 2, 200);
     }
+    let tag = null;
+    try { tag = await readFile(LOCK_FILE, 'utf8'); } catch { tag = null; }
+    if (tag === null && !existsSync(LOCK_FILE)) { await sleep(5); continue; } // released under us
+
+    const alive = holderIsAlive(tag);
+    const breakIt = alive === false
+      || (alive === null && (await lockAgeMs()) > UNKNOWN_LOCK_GRACE_MS)
+      || (alive === true && Date.now() - start > timeoutMs);
+
+    if (breakIt) {
+      // Only break the lock we just judged: if it changed hands while we were
+      // deciding, the new holder is not the one we found dead.
+      let still = null;
+      try { still = await readFile(LOCK_FILE, 'utf8'); } catch { still = null; }
+      if (still === tag) {
+        try { await rm(LOCK_FILE, { force: true }); } catch {}
+      } else {
+        await sleep(5); // it changed hands while we were deciding
+      }
+      continue; // whoever wins the next O_EXCL create owns it
+    }
+    await sleep(backoff + Math.floor(Math.random() * 10));
+    backoff = Math.min(backoff * 2, 120);
   }
 }
 
 async function releaseLock() {
+  lockHeld = false;
   try { await rm(LOCK_FILE, { force: true }); } catch {}
+}
+
+// Saves inside one process are serialised here as well, so a process never
+// contends with (or breaks) its own lock — orchestrator.mjs fires
+// saveStateAtomic() without awaiting it in more than one place.
+let saveQueue = Promise.resolve();
+function queueSave(fn) {
+  const run = saveQueue.then(fn, fn);
+  saveQueue = run.then(() => {}, () => {});
+  return run;
 }
 
 function normalizeProvider(p) {
@@ -110,8 +208,17 @@ function normalizeProvider(p) {
  *
  * Lives here rather than in the CLI layer because dispatch and the preflight
  * gate both need it, and the hot path must not import a CLI module.
+ *
+ * Only a string, a finite number of milliseconds or a Date is a timestamp.
+ * `null` in particular is NOT: `new Date(null)` is the epoch, and quoting
+ * "1 February 1970" as the day a key comes back is worse than admitting we do
+ * not know.
  */
 export function nextResetIso(burnedAt) {
+  const usable = (typeof burnedAt === 'string' && burnedAt.trim() !== '')
+    || (typeof burnedAt === 'number' && Number.isFinite(burnedAt))
+    || burnedAt instanceof Date;
+  if (!usable) return '—';
   const d = new Date(burnedAt);
   if (Number.isNaN(d.getTime())) return '—';
   return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 1, 0, 0, 0)).toISOString();
@@ -119,9 +226,9 @@ export function nextResetIso(burnedAt) {
 
 /** The cached validation verdict for one key index, or null. */
 export function getValidation(state, provider, index) {
-  const p = state[provider];
+  const p = state && state[provider];
   if (!p || !Array.isArray(p.validated)) return null;
-  const hit = p.validated.find(v => v.index === index);
+  const hit = p.validated.find(v => v && v.index === index);
   if (!hit) return null;
   const at = new Date(hit.at).getTime();
   if (!Number.isFinite(at) || Date.now() - at > VALIDATION_TTL_MS) return null;
@@ -130,22 +237,22 @@ export function getValidation(state, provider, index) {
 
 /** Record a live validation verdict for one key index. */
 export function setValidation(state, provider, index, { ok, status, reason } = {}) {
-  const p = state[provider];
+  const p = state && state[provider];
   if (!p) return;
   if (!Array.isArray(p.validated)) p.validated = [];
   const entry = { index, at: new Date().toISOString(), ok: !!ok, status: status ?? null, reason: reason ?? null };
-  const i = p.validated.findIndex(v => v.index === index);
+  const i = p.validated.findIndex(v => v && v.index === index);
   if (i >= 0) p.validated[i] = entry;
   else p.validated.push(entry);
 }
 
 /** Forget a cached verdict (after a burn, or when the key list shifts). */
 export function clearValidation(state, provider, index) {
-  const p = state[provider];
+  const p = state && state[provider];
   if (!p || !Array.isArray(p.validated)) return;
   p.validated = index === undefined
     ? []
-    : p.validated.filter(v => v.index !== index);
+    : p.validated.filter(v => v && v.index !== index);
 }
 
 function applyMonthlyReset(state) {
@@ -153,16 +260,15 @@ function applyMonthlyReset(state) {
   const nowY = now.getUTCFullYear();
   const nowM = now.getUTCMonth();
   for (const p of PROVIDERS) {
-    const before = state[p].burned.length;
-    state[p].burned = state[p].burned.filter(b => {
-      const at = new Date(b.at);
+    const sec = state && state[p];
+    if (!sec || !Array.isArray(sec.burned)) continue;
+    sec.burned = sec.burned.filter(b => {
+      const at = new Date(b && b.at);
       if (Number.isNaN(at.getTime())) return false;
       return !(nowY > at.getUTCFullYear() || (nowY === at.getUTCFullYear() && nowM > at.getUTCMonth()));
     });
-    if (state[p].burned.length !== before) {
-      // current may now point to a slot that became usable again — leave as-is;
-      // nextUsableKeyIndex will surface the lowest usable.
-    }
+    // current may now point to a slot that became usable again — leave as-is;
+    // nextUsableKeyIndex will surface the lowest usable.
   }
   return state;
 }
@@ -191,6 +297,71 @@ export async function migrateLegacy() {
   }
 }
 
+// ------------------------------------------------- unreadable keys.json ---
+
+/**
+ * Copy an unreadable keys.json aside and describe the copy.
+ *
+ * Content-addressed on purpose: re-reading the same broken file must not spray
+ * near-identical backups over ~/.config/surf, and must never claim a copy it
+ * did not make. Returns the record that is carried inside the next keys.json,
+ * or null when there was nothing to save (or nowhere to save it).
+ */
+async function quarantineUnreadable(rawText) {
+  if (typeof rawText !== 'string' || rawText.trim() === '') return null;
+  await ensureConfigDir();
+  const day = new Date().toISOString().slice(0, 10);
+  const digest = createHash('sha256').update(rawText).digest('hex').slice(0, 8);
+  const file = join(CONFIG_DIR, `keys.corrupt-${day}-${digest}.json`);
+  const record = (backup) => ({
+    at: new Date().toISOString(),
+    backup,
+    bytes: Buffer.byteLength(rawText, 'utf8'),
+    raw: rawText.length > UNREADABLE_RAW_CAP ? rawText.slice(0, UNREADABLE_RAW_CAP) : rawText,
+  });
+  try {
+    await writeFile(file, rawText, { flag: 'wx', mode: 0o600 });
+    return record(file);
+  } catch (e) {
+    if (e && e.code === 'EEXIST') {
+      // Same name means same content hash; verify before claiming the copy.
+      try {
+        if ((await readFile(file, 'utf8')) === rawText) return record(file);
+      } catch {}
+    }
+  }
+  try {
+    const alt = join(CONFIG_DIR, `keys.corrupt-${Date.now()}-${process.pid}.json`);
+    await writeFile(alt, rawText, { mode: 0o600 });
+    return record(alt);
+  } catch {
+    return null; // could not copy: say so rather than pretend
+  }
+}
+
+function warnUnreadable(why, record) {
+  const tail = record && record.backup
+    ? `A verbatim copy was saved to ${record.backup} before anything was rewritten — nothing was destroyed, `
+      + `and the original bytes also travel inside keys.json under "unreadable".`
+    : `NO copy could be made, so nothing has been rewritten yet — back the file up by hand before running surf again.`;
+  process.stderr.write(
+    `⚠ surf could not read ${KEYS_FILE} (${why}). ${tail}\n`
+    + `  Re-add your key with: surf-research-skill keys add --provider brave <key>\n`,
+  );
+}
+
+function normalizeUnreadable(u) {
+  if (!u || typeof u !== 'object' || Array.isArray(u)) return null;
+  const raw = typeof u.raw === 'string' ? u.raw.slice(0, UNREADABLE_RAW_CAP) : '';
+  if (!raw && !u.backup) return null;
+  return {
+    at: typeof u.at === 'string' ? u.at : new Date().toISOString(),
+    backup: typeof u.backup === 'string' ? u.backup : null,
+    bytes: Number.isFinite(u.bytes) ? u.bytes : Buffer.byteLength(raw, 'utf8'),
+    raw,
+  };
+}
+
 // Normalize a parsed keys.json to the current schema. Crucially, this
 // auto-adds any provider section that's missing from older keys.json files
 // (e.g. v2.0.x users upgrading to v2.1.x get a fresh `brave` section without
@@ -205,60 +376,240 @@ function normalizeFullState(parsed) {
   for (const p of PROVIDERS) {
     out[p] = normalizeProvider(parsed && parsed[p]);
   }
+  // Not a provider section: the quarantined bytes of a keys.json we could not
+  // parse. It survives every save until the user clears it, because it may be
+  // the only surviving copy of their key.
+  const u = normalizeUnreadable(parsed && parsed.unreadable);
+  if (u) out.unreadable = u;
+  return out;
+}
+
+// ------------------------------------------------------- the 3-way merge ---
+// The snapshot rides on the state object under a symbol: invisible to
+// JSON.stringify, to Object.keys and to `for...in`, but copied by `{...state}`
+// (snapshotForPersist does exactly that), so a spread does not lose the base.
+const SNAPSHOT = Symbol.for('surf.state.snapshot');
+
+function deepClone(o) {
+  return JSON.parse(JSON.stringify(o));
+}
+
+function keyAt(prov, i) {
+  return Array.isArray(prov.keys) && Number.isInteger(i) && i >= 0 && i < prov.keys.length ? prov.keys[i] : null;
+}
+
+/** Index a provider's burned/cooldowns/validated list by the KEY it points at. */
+function byKeyValue(prov, field) {
+  const m = new Map();
+  for (const e of prov[field] || []) {
+    const k = keyAt(prov, e && e.index);
+    if (k !== null && !m.has(k)) m.set(k, e);
+  }
+  return m;
+}
+
+function sameEntry(a, b) {
+  const strip = (e) => {
+    if (!e || typeof e !== 'object') return null;
+    const { index, ...rest } = e;
+    return rest;
+  };
+  return JSON.stringify(strip(a)) === JSON.stringify(strip(b));
+}
+
+/**
+ * Merge one provider section. Everything is resolved by KEY VALUE, never by
+ * index, because a concurrent writer may have shifted every index.
+ *
+ *   base   what this process read at loadState()
+ *   mine   what this process wants to write
+ *   theirs what is on disk right now
+ *
+ * A key I added survives; a key I removed stays removed; a key I never touched
+ * is whatever the other writer left. Same rule, entry by entry, for burns,
+ * cooldowns and cached verdicts.
+ */
+function mergeProvider(base, mine, theirs) {
+  const b = normalizeProvider(base);
+  const m = normalizeProvider(mine);
+  const t = normalizeProvider(theirs);
+
+  const removed = new Set(b.keys.filter(k => !m.keys.includes(k)));
+  const keys = t.keys.filter(k => !removed.has(k));
+  for (const k of m.keys) if (!b.keys.includes(k) && !keys.includes(k)) keys.push(k);
+
+  const out = { keys, current: 0, burned: [], cooldowns: [], validated: [] };
+  for (const field of ['burned', 'cooldowns', 'validated']) {
+    const mb = byKeyValue(b, field);
+    const mm = byKeyValue(m, field);
+    const mt = byKeyValue(t, field);
+    const list = [];
+    for (let i = 0; i < keys.length; i++) {
+      const k = keys[i];
+      const mineE = mm.get(k);
+      const pick = sameEntry(mineE, mb.get(k)) ? mt.get(k) : mineE;
+      if (pick) list.push({ ...pick, index: i });
+    }
+    out[field] = list;
+  }
+
+  const myCur = keyAt(m, m.current);
+  const wanted = myCur !== keyAt(b, b.current) ? myCur : keyAt(t, t.current);
+  const ci = wanted === null ? -1 : keys.indexOf(wanted);
+  out.current = ci >= 0 ? ci : 0;
+  return out;
+}
+
+function mergeStates(base, mine, theirs) {
+  const out = {
+    schema_version: SCHEMA_VERSION,
+    last_ok_provider: (mine && mine.last_ok_provider) !== (base && base.last_ok_provider)
+      ? (mine && mine.last_ok_provider)
+      : (theirs && theirs.last_ok_provider),
+  };
+  for (const p of PROVIDERS) {
+    out[p] = mergeProvider(base && base[p], mine && mine[p], theirs && theirs[p]);
+  }
+  const u = (mine && mine.unreadable) || (theirs && theirs.unreadable);
+  if (u) out.unreadable = u;
   return out;
 }
 
 export async function loadState({ skipMonthlyReset = false } = {}) {
   await ensureConfigDir();
   let raw = blankState();
+  let diskText = null;
   if (existsSync(KEYS_FILE)) {
+    let txt = null;
     try {
-      const txt = await readFile(KEYS_FILE, 'utf8');
-      const parsed = JSON.parse(txt);
-      const rescued = await rescueLegacyProviderKeys(parsed);
-      if (rescued) {
-        process.stderr.write(
-          `\u26a0 surf v8 is Brave-only. Your Tavily/Parallel keys were copied to ${rescued} ` +
-          `before being removed from keys.json — nothing was destroyed.\n`,
-        );
+      txt = await readFile(KEYS_FILE, 'utf8');
+      diskText = txt;
+    } catch (e) {
+      // Unreadable for a reason we cannot copy around (permissions, a
+      // directory where the file should be). Say so; never claim a backup.
+      warnUnreadable(e && e.code ? e.code : 'unreadable', null);
+      txt = null;
+    }
+    if (txt !== null) {
+      let parsed;
+      let why = null;
+      try {
+        parsed = JSON.parse(txt);
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+          const kind = parsed === null ? 'null' : Array.isArray(parsed) ? 'array' : typeof parsed;
+          why = `it is valid JSON but not an object (${kind})`;
+        }
+      } catch (e) {
+        why = `it is not valid JSON: ${e.message}`;
       }
-      raw = normalizeFullState(parsed);
-    } catch {
-      raw = blankState();
+      if (why) {
+        // The copy has to exist BEFORE the next save, not after it.
+        const record = await quarantineUnreadable(txt);
+        if (txt.trim() !== '') warnUnreadable(why, record);
+        raw = blankState();
+        if (record) raw.unreadable = record;
+      } else {
+        const rescued = await rescueLegacyProviderKeys(parsed);
+        if (rescued) {
+          process.stderr.write(
+            `⚠ surf v8 is Brave-only. Your Tavily/Parallel keys were copied to ${rescued} `
+            + `before being removed from keys.json — nothing was destroyed.\n`,
+          );
+        }
+        raw = normalizeFullState(parsed);
+      }
     }
   } else {
     await saveStateAtomic(raw);
+    try { diskText = await readFile(KEYS_FILE, 'utf8'); } catch { diskText = null; }
   }
   if (!skipMonthlyReset) applyMonthlyReset(raw);
+  // The base for the three-way merge: what this process believes was on disk
+  // when it started, and the exact bytes it saw there.
+  raw[SNAPSHOT] = { text: diskText, base: deepClone(raw) };
   return raw;
 }
 
 export async function saveStateAtomic(state) {
   await ensureConfigDir();
-  await acquireLock();
+  return queueSave(async () => {
+    const snap = state && state[SNAPSHOT];
+    await acquireLock();
+    try {
+      let diskText = null;
+      try { diskText = await readFile(KEYS_FILE, 'utf8'); } catch { diskText = null; }
+
+      let out = state;
+      // Only a state that came from loadState() carries a base, and only a
+      // file that moved since then needs merging. Everything else writes
+      // exactly what the caller built, as it always has.
+      if (snap && diskText !== null && diskText !== snap.text) {
+        let theirs = null;
+        try {
+          const p = JSON.parse(diskText);
+          if (p && typeof p === 'object' && !Array.isArray(p)) theirs = normalizeFullState(p);
+        } catch { theirs = null; }
+        if (theirs) {
+          out = mergeStates(snap.base, state, theirs);
+        } else {
+          // Somebody corrupted keys.json after we loaded it. Copy it aside
+          // before our write lands on top of it.
+          const record = await quarantineUnreadable(diskText);
+          out = { ...state };
+          if (record) out.unreadable = record;
+        }
+      }
+
+      const safe = normalizeFullState(out);
+      const payload = JSON.stringify(safe, null, 2);
+      // A per-process temp name: two writers sharing one ".tmp" path can
+      // rename a half-written file into place.
+      const tmp = `${KEYS_FILE}.tmp.${process.pid}.${randomBytes(4).toString('hex')}`;
+      try {
+        await writeFile(tmp, payload, { mode: 0o600 });
+        await rename(tmp, KEYS_FILE);
+      } catch (e) {
+        try { await rm(tmp, { force: true }); } catch {}
+        throw e;
+      }
+      try { await chmod(KEYS_FILE, 0o600); } catch {}
+      // Our snapshot is now the file on disk, so a second save from the same
+      // long-lived process does not re-merge against a stale base.
+      if (snap) { snap.text = payload; snap.base = deepClone(safe); }
+      await sweepStaleTemps();
+    } finally {
+      await releaseLock();
+    }
+  });
+}
+
+// A process killed between writeFile and rename leaves its temp file behind.
+// It is inert, but it should not pile up in the user's config directory.
+async function sweepStaleTemps() {
   try {
-    const safe = normalizeFullState(state);
-    const tmp = KEYS_FILE + '.tmp';
-    const payload = JSON.stringify(safe, null, 2);
-    await writeFile(tmp, payload, { mode: 0o600 });
-    await rename(tmp, KEYS_FILE);
-    try { await chmod(KEYS_FILE, 0o600); } catch {}
-  } finally {
-    await releaseLock();
-  }
+    const cutoff = Date.now() - 60_000;
+    for (const f of await readdir(CONFIG_DIR)) {
+      if (!f.startsWith('keys.json.tmp.')) continue;
+      const p = join(CONFIG_DIR, f);
+      try {
+        const st = await stat(p);
+        if (st.mtimeMs < cutoff) await rm(p, { force: true });
+      } catch {}
+    }
+  } catch {}
 }
 
 export function providerHasUsableKey(state, provider) {
-  const p = state[provider];
-  if (!p || !p.keys.length) return false;
-  const burnedIdx = new Set(p.burned.map(b => b.index));
+  const p = state && state[provider];
+  if (!p || !Array.isArray(p.keys) || !p.keys.length) return false;
+  const burnedIdx = new Set((Array.isArray(p.burned) ? p.burned : []).map(b => b && b.index));
   return p.keys.some((_, i) => !burnedIdx.has(i));
 }
 
 export function nextUsableKeyIndex(state, provider, skipIndex = -1) {
-  const p = state[provider];
-  if (!p || !p.keys.length) return -1;
-  const burnedIdx = new Set(p.burned.map(b => b.index));
+  const p = state && state[provider];
+  if (!p || !Array.isArray(p.keys) || !p.keys.length) return -1;
+  const burnedIdx = new Set((Array.isArray(p.burned) ? p.burned : []).map(b => b && b.index));
   const now = Date.now();
   const n = p.keys.length;
   const start = Number.isInteger(p.current) ? Math.max(0, Math.min(p.current, n - 1)) : 0;
@@ -276,37 +627,48 @@ export function nextUsableKeyIndex(state, provider, skipIndex = -1) {
 // the next process run doesn't immediately re-hit a rate-limited key. Expired
 // entries are pruned in normalizeProvider.
 export function setCooldown(state, provider, index, untilMs) {
-  const p = state[provider];
+  const p = state && state[provider];
   if (!p) return;
+  const ms = untilMs instanceof Date ? untilMs.getTime() : Number(untilMs);
+  // An unparseable deadline is not a cooldown. Refusing it is right; throwing
+  // RangeError from inside a 429 handler is not.
+  if (!Number.isFinite(ms)) return;
   if (!Array.isArray(p.cooldowns)) p.cooldowns = [];
-  const until = new Date(untilMs).toISOString();
-  const existing = p.cooldowns.find(c => c.index === index);
+  const until = new Date(ms).toISOString();
+  const existing = p.cooldowns.find(c => c && c.index === index);
   if (existing) existing.until = until;
   else p.cooldowns.push({ index, until });
 }
 
 export function cooldownActive(providerState, index, now = Date.now()) {
   if (!providerState || !Array.isArray(providerState.cooldowns)) return false;
-  const c = providerState.cooldowns.find(x => x.index === index);
+  const c = providerState.cooldowns.find(x => x && x.index === index);
   if (!c) return false;
   const until = new Date(c.until).getTime();
   return Number.isFinite(until) && until > now;
 }
 
 export function markBurned(state, provider, index, reason) {
-  const p = state[provider];
+  const p = state && state[provider];
   if (!p) return;
   // A burn overrides any cached "valid" verdict: proof from the live API beats
   // a week-old cache entry.
   clearValidation(state, provider, index);
-  if (p.burned.some(b => b.index === index)) return;
+  if (!Array.isArray(p.burned)) p.burned = [];
+  if (p.burned.some(b => b && b.index === index)) return;
   p.burned.push({ index, at: new Date().toISOString(), reason: String(reason || 'unknown') });
   while (p.burned.length > BURNED_CAP) p.burned.shift();
 }
 
 export function clearBurned(state, provider) {
-  if (provider) state[provider].burned = [];
-  else for (const p of PROVIDERS) state[p].burned = [];
+  if (!state || typeof state !== 'object') return;
+  for (const p of provider ? [provider] : PROVIDERS) {
+    const sec = state[p];
+    // A provider section that isn't there has no burns to clear. Saying so is
+    // the whole job; crashing on `keys reset` because openrouter was never
+    // configured is not.
+    if (sec && typeof sec === 'object') sec.burned = [];
+  }
 }
 
 /**
@@ -317,14 +679,15 @@ export function clearBurned(state, provider) {
  * is `keys reset`, not another key. One function, so every throw site agrees.
  */
 export function explainUnusable(state, provider) {
-  const p = state[provider];
-  if (!p || !p.keys.length) {
+  const p = state && state[provider];
+  if (!p || !Array.isArray(p.keys) || !p.keys.length) {
     return { reason: 'no key configured', fix: `surf-research-skill keys add --provider ${provider} <key>` };
   }
-  const burnedIdx = new Set(p.burned.map(b => b.index));
+  const burnedList = Array.isArray(p.burned) ? p.burned : [];
+  const burnedIdx = new Set(burnedList.map(b => b && b.index));
   const usable = p.keys.map((_, i) => i).filter(i => !burnedIdx.has(i));
   if (!usable.length) {
-    const b = p.burned[0] || {};
+    const b = burnedList[0] || {};
     return {
       reason: `all ${p.keys.length} key(s) burned (${b.reason || 'auth'}, at ${b.at || 'unknown'}; auto-resets ${nextResetIso(b.at)})`,
       fix: `surf-research-skill keys reset --provider ${provider}`,
@@ -333,7 +696,7 @@ export function explainUnusable(state, provider) {
   const now = Date.now();
   const cooling = usable.filter(i => cooldownActive(p, i, now));
   if (cooling.length === usable.length) {
-    const c = (p.cooldowns || []).find(x => x.index === cooling[0]);
+    const c = (p.cooldowns || []).find(x => x && x.index === cooling[0]);
     return {
       reason: `all usable key(s) are cooling down after a rate limit until ${c ? c.until : 'shortly'}`,
       fix: 'wait for the cooldown to expire, or add another key to widen the rate budget',
@@ -342,23 +705,65 @@ export function explainUnusable(state, provider) {
   return null;
 }
 
+/** Union the key lists of two legacy-rescue payloads, newest fields winning. */
+function mergeLegacyPayloads(prev, next) {
+  const out = { ...prev };
+  for (const [name, sec] of Object.entries(next)) {
+    const before = prev[name] && Array.isArray(prev[name].keys) ? prev[name].keys : [];
+    const now = Array.isArray(sec.keys) ? sec.keys : [];
+    const keys = [...before];
+    for (const k of now) if (!keys.includes(k)) keys.push(k);
+    out[name] = { ...(prev[name] || {}), ...sec, keys };
+  }
+  return out;
+}
+
 /**
  * One-shot rescue of keys belonging to providers this version no longer
  * supports. v8.0.0 dropped Tavily and Parallel; silently deleting paid keys
  * from a user's config would be indefensible, so they are copied out first.
+ *
+ * The rescue is per DAY, but a second rescue on the same day is a real event —
+ * a restored backup, two machines syncing ~/.config/surf — and the keys in it
+ * are different keys. It merges into the day's file instead of skipping, so
+ * the path this returns (and loadState prints) is always a file that really
+ * does contain the keys about to leave keys.json.
  */
 async function rescueLegacyProviderKeys(parsed) {
   const legacy = {};
   for (const name of ['tavily', 'parallel']) {
     const sec = parsed && parsed[name];
-    if (sec && Array.isArray(sec.keys) && sec.keys.length) legacy[name] = sec;
+    if (sec && Array.isArray(sec.keys) && sec.keys.some(k => typeof k === 'string' && k)) legacy[name] = sec;
   }
   if (!Object.keys(legacy).length) return null;
+
   const file = join(CONFIG_DIR, `keys.legacy-${new Date().toISOString().slice(0, 10)}.json`);
-  try {
-    if (!existsSync(file)) {
-      await writeFile(file, JSON.stringify(legacy, null, 2), { mode: 0o600 });
+  let existingTxt = null;
+  if (existsSync(file)) {
+    try { existingTxt = await readFile(file, 'utf8'); } catch { existingTxt = null; }
+  }
+  let merged = legacy;
+  if (existingTxt !== null) {
+    let prev = null;
+    try { prev = JSON.parse(existingTxt); } catch { prev = null; }
+    if (prev && typeof prev === 'object' && !Array.isArray(prev)) {
+      merged = mergeLegacyPayloads(prev, legacy);
+    } else {
+      // The sidecar is itself unreadable — never overwrite it, and never
+      // report a path that does not hold these keys.
+      try {
+        const alt = join(CONFIG_DIR, `keys.legacy-${Date.now()}-${process.pid}.json`);
+        await writeFile(alt, JSON.stringify(legacy, null, 2), { mode: 0o600 });
+        return alt;
+      } catch {
+        return null;
+      }
     }
+  }
+  const payload = JSON.stringify(merged, null, 2);
+  if (existingTxt === payload) return file; // already byte-identical on disk
+  try {
+    await writeFile(file, payload, { mode: 0o600 });
     return file;
   } catch {
     return null;
