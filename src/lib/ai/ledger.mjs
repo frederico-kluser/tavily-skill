@@ -14,11 +14,23 @@ const STRIP_PARAMS = [
   'gclid', 'fbclid', 'ref', 'ref_src', 'source', 'mc_cid', 'mc_eid',
 ];
 
-/** Canonical form used for dedupe: no tracking params, no fragment, no trailing slash. */
+/**
+ * Canonical form used for dedupe: no credentials, no tracking params, no
+ * fragment, no trailing slash.
+ *
+ * The credentials are not a dedupe concern, they are a disclosure one. Every
+ * url that reaches this function is printed by sourcesText() and embedded in
+ * the synthesis prompt, so a `https://user:token@host/…` — returned by a
+ * provider, or pasted by the user — used to leave the process on stdout AND
+ * inside a third-party LLM request. Strip them here, at the one chokepoint
+ * every url passes through, rather than at each of the places that print one.
+ */
 export function canonicalUrl(raw) {
   if (typeof raw !== 'string' || !raw.trim()) return '';
   try {
     const u = new URL(raw.trim());
+    u.username = '';
+    u.password = '';
     u.hash = '';
     for (const p of STRIP_PARAMS) u.searchParams.delete(p);
     let s = u.toString();
@@ -53,11 +65,19 @@ export class Ledger {
     this.seenQueries.add(normQuery(q));
   }
 
-  /** Record a successful search. `envelope` is a dispatch() result. */
+  /**
+   * Record a successful search. `envelope` is a dispatch() result.
+   *
+   * Nothing in here may throw. This runs while a wave is being accounted for,
+   * so a single malformed result — a missing envelope, a `null` inside
+   * data.results — used to abort the whole wave and lose the rows of every
+   * sibling query that DID succeed.
+   */
   addSuccess(round, item, envelope) {
-    const data = (envelope && envelope.data) || {};
+    const env = (envelope && typeof envelope === 'object') ? envelope : {};
+    const data = (env.data && typeof env.data === 'object') ? env.data : {};
     const results = Array.isArray(data.results) ? data.results : [];
-    const kept = results.map(r => {
+    const kept = results.filter(r => r && typeof r === 'object').map(r => {
       const url = canonicalUrl(r.url);
       const entry = this.#indexSource(url, r);
       return {
@@ -73,9 +93,9 @@ export class Ledger {
       round, id: item.id, sub: item.sub, category: item.category || null,
       parent: item.parent || null, depth: item.depth ?? 0, kind: item.kind || 'breadth',
       query: item.q, ok: true,
-      provider: envelope.provider,
-      latency_ms: envelope.latency_ms,
-      credits: (envelope.usage && envelope.usage.credits) || 0,
+      provider: env.provider,
+      latency_ms: env.latency_ms,
+      credits: (env.usage && env.usage.credits) || 0,
       answer: data.answer || null,
       results: kept,
     });
@@ -141,11 +161,17 @@ export class Ledger {
     };
   }
 
-  /** Numbered source list for the synthesis prompt and the printed footer. */
+  /**
+   * Numbered source list for the synthesis prompt and the printed footer.
+   *
+   * One source per LINE, so a title carrying a newline — page titles do — must
+   * be collapsed: otherwise source [7] becomes two entries and the model has a
+   * dangling line to attribute a citation to.
+   */
   sourcesText() {
     const lines = [];
     for (const e of this.sourceIndex.values()) {
-      lines.push(`[${e.n}] ${e.title} — ${e.url}${e.date ? ` (${e.date})` : ''}`);
+      lines.push(`[${e.n}] ${oneLine(e.title)} — ${e.url}${e.date ? ` (${oneLine(e.date)})` : ''}`);
     }
     return lines.join('\n') || '(no sources retrieved)';
   }
@@ -180,7 +206,7 @@ export class Ledger {
       for (const r of row.results.slice(0, maxResults)) {
         const snippet = clean(r.content, perResult);
         body.push(
-          `- [${r.n}] ${r.title}${r.date ? ` (${r.date})` : ''}\n  ${r.url}\n  ${snippet || '(no snippet returned)'}`
+          `- ${citation(r.n)} ${r.title}${r.date ? ` (${r.date})` : ''}\n  ${r.url}\n  ${snippet || '(no snippet returned)'}`
         );
       }
       const block = `${head}\n${body.join('\n') || '(no results)'}\n`;
@@ -201,19 +227,25 @@ export class Ledger {
     return out || '(no evidence gathered)';
   }
 
-  /** Markdown table of every query — the auditable coverage record. */
+  /**
+   * Markdown table of every query — the auditable coverage record.
+   *
+   * Every cell goes through cell(). Titles come from the open web and sub ids
+   * come from an LLM plan, so a `|` or a newline in either of them used to
+   * shift the columns of one row or split it into two, and a coverage record
+   * that renders wrong is not a coverage record.
+   */
   tableMarkdown() {
     const lines = [
       '| Wave | Depth | Sub | Query id | Kind | Parent | Status | Top source |',
       '|---|---|---|---|---|---|---|---|',
     ];
     for (const r of this.rows) {
-      const top = r.ok && r.results[0]
-        ? `[${r.results[0].n}] ${trunc(r.results[0].title, 60)}`
-        : '—';
+      const first = r.ok ? r.results[0] : null;
+      const top = first ? `${citation(first.n)} ${trunc(first.title, 60)}` : '—';
       const status = r.ok ? `OK (${r.results.length} hits)` : `FAILED: ${r.error.code}`;
       lines.push(
-        `| ${r.round} | ${r.depth ?? 0} | ${r.sub || '—'} | ${r.id} | ${r.kind || 'breadth'} | ${r.parent || '—'} | ${status} | ${top} |`
+        `| ${r.round} | ${r.depth ?? 0} | ${cell(r.sub || '—')} | ${cell(r.id)} | ${cell(r.kind || 'breadth')} | ${cell(r.parent || '—')} | ${cell(status)} | ${cell(top)} |`
       );
     }
     return lines.join('\n');
@@ -236,4 +268,33 @@ function normQuery(q) {
 function trunc(s, n) {
   const t = String(s || '');
   return t.length > n ? t.slice(0, n - 1) + '…' : t;
+}
+
+/**
+ * The citation marker for a result.
+ *
+ * A result with no url gets no source number, and `[null]` was being printed
+ * straight into the synthesis prompt — a marker the model can and does copy
+ * into the answer, pointing at a source that does not exist. Say plainly that
+ * there is nothing to cite instead.
+ */
+function citation(n) {
+  return Number.isInteger(n) ? `[${n}]` : '(no citable url)';
+}
+
+/** Collapse to one line. Titles come from the open web and carry newlines. */
+function oneLine(v) {
+  return String(v == null ? '' : v).replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * One markdown table cell: no line break, no raw pipe, ever.
+ *
+ * `\|` is the markdown escape and renders correctly in GFM, but the literal
+ * `|` is still there in the text, so anything that reads the row by splitting
+ * on `|` still counts the wrong number of columns. `&#124;` renders as a pipe
+ * and leaves no delimiter behind, which is the property this needs.
+ */
+function cell(v) {
+  return oneLine(v).replace(/\|/g, '&#124;');
 }
